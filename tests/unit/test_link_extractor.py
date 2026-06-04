@@ -40,10 +40,27 @@ def test_pdf_hyperlinks_merged() -> None:
 
 def test_infer_technical_platforms_from_handle() -> None:
     jd = JdStructured(domain="technical", must_have=["Python"])
-    links = extract_links("Contact @coder123 for more.", jd=jd, max_urls=10)
+    text = "GitHub: @coder123 — active on hackerrank for coding challenges."
+    links = extract_links(text, jd=jd, max_urls=10)
     inferred = [link for link in links if link.source == "inferred"]
     assert inferred
     assert any("github.com/coder123" in link.url for link in inferred)
+    assert any("hackerrank.com/coder123" in link.url for link in inferred)
+    assert not any("kaggle.com" in link.url for link in inferred)
+
+
+def test_email_domain_not_inferred_as_profile() -> None:
+    text = """
+    manav@gmail.com
+    GitHub: https://github.com/Manavv007
+    LinkedIn: linkedin.com/in/manavbhavsar0908
+    """
+    links = extract_links(text, max_urls=10)
+    joined = " ".join(link.url for link in links)
+    assert "gitlab.com/gmail" not in joined
+    assert "kaggle.com/gmail" not in joined
+    assert "hackerrank.com/gmail" not in joined
+    assert "https://github.com/manavv007" in joined.lower()
 
 
 def test_dedupe_urls() -> None:
@@ -68,7 +85,11 @@ def test_jd_domain_drives_inference() -> None:
         "Graphic Designer\nRequirements:\n- Figma",
         use_llm=False,
     )
-    links = extract_links("Reach me @designstar", jd=jd, max_urls=8)
+    links = extract_links(
+        "Portfolio on behance.net — reach me @designstar",
+        jd=jd,
+        max_urls=8,
+    )
     hosts = {link.platform for link in links if link.source == "inferred"}
     assert "behance.net" in hosts or "dribbble.com" in hosts
 

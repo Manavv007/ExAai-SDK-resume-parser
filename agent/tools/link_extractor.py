@@ -17,7 +17,23 @@ _BARE_DOMAIN_PATTERN = re.compile(
     r"(?i)\b((?:github|gitlab|linkedin)\.com/[\w\-./%]+|"
     r"(?:linkedin\.com/in/[\w\-]+)|(?:github\.com/[\w\-]+))"
 )
-_HANDLE_PATTERN = re.compile(r"@([A-Za-z0-9_\-.]{2,})")
+# Social handles only — exclude email addresses (e.g. user@gmail.com → not @gmail.com).
+_HANDLE_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9._%+\-])@([A-Za-z0-9_\-]{2,39})(?![A-Za-z0-9._%+\-])"
+)
+_EMAIL_DOMAIN_HANDLES = frozenset(
+    {
+        "gmail.com",
+        "googlemail.com",
+        "outlook.com",
+        "hotmail.com",
+        "yahoo.com",
+        "icloud.com",
+        "protonmail.com",
+        "live.com",
+        "msn.com",
+    }
+)
 
 _TRACKING_PARAMS = frozenset(
     {
@@ -110,13 +126,54 @@ def normalize_url(url: str) -> str | None:
     return normalized
 
 
-def _extract_handles(text: str) -> list[str]:
+def _is_valid_social_handle(handle: str) -> bool:
+    """Reject email domains and other non-username @ tokens."""
+    if not handle or "." in handle:
+        return False
+    lowered = handle.lower()
+    if lowered in _EMAIL_DOMAIN_HANDLES:
+        return False
+    if lowered in {"email", "mail", "contact"}:
+        return False
+    return bool(re.fullmatch(r"[A-Za-z0-9_\-]+", handle))
+
+
+def _handle_from_explicit_github(urls: list[str]) -> str | None:
+    """Prefer GitHub username from an explicit profile/repo URL on the resume."""
+    for raw in urls:
+        normalized = normalize_url(raw)
+        if not normalized or "github.com" not in normalized:
+            continue
+        parts = [p for p in urlparse(normalized).path.split("/") if p]
+        if not parts:
+            continue
+        candidate = parts[0]
+        if candidate.lower() in {"orgs", "settings", "marketplace", "topics"}:
+            continue
+        if _is_valid_social_handle(candidate):
+            return candidate
+    return None
+
+
+def _extract_handles(text: str, *, explicit_urls: list[str]) -> list[str]:
     handles: list[str] = []
+
+    github_user = _handle_from_explicit_github(explicit_urls)
+    if github_user:
+        handles.append(github_user)
+
     for match in _HANDLE_PATTERN.finditer(text):
         handle = match.group(1).strip().strip("/")
-        if handle and handle not in handles:
+        if _is_valid_social_handle(handle) and handle not in handles:
             handles.append(handle)
     return handles[:5]
+
+
+def _resume_mentions_platform(resume_text: str, host: str) -> bool:
+    """Only infer a platform URL if the resume actually references that site."""
+    lowered = resume_text.lower()
+    key = host.split(".")[0]
+    return key in lowered or host in lowered
 
 
 def _extract_explicit_urls(text: str, pdf_hyperlinks: list[str] | None) -> list[str]:
@@ -131,19 +188,37 @@ def _extract_explicit_urls(text: str, pdf_hyperlinks: list[str] | None) -> list[
     return found
 
 
-def _infer_links(domain: str, handles: list[str]) -> list[ExtractedLink]:
+def _infer_links(
+    domain: str,
+    handles: list[str],
+    resume_text: str,
+    *,
+    explicit_hosts: set[str],
+) -> list[ExtractedLink]:
+    """
+    Guess profile URLs only when we have a real username handle.
+
+    Platforms are included only if the resume mentions that site or the
+    candidate already linked to it explicitly (avoids gmail.com → kaggle.com).
+    """
     templates = _DOMAIN_INFERENCE.get(domain, [])
     if not templates or not handles:
         return []
 
     inferred: list[ExtractedLink] = []
     handle = handles[0]
-    for _host, template in templates[:4]:
+    for host, template in templates:
+        if host in explicit_hosts:
+            continue
+        if not _resume_mentions_platform(resume_text, host):
+            continue
         url = normalize_url(template.format(handle=handle))
         if url:
             inferred.append(
-                ExtractedLink(url=url, source="inferred", platform=_host),
+                ExtractedLink(url=url, source="inferred", platform=host),
             )
+        if len(inferred) >= 2:
+            break
     return inferred
 
 
@@ -164,10 +239,11 @@ def extract_links(
     domain = jd.domain if jd else _detect_resume_domain(resume_text)
 
     explicit_raw = _extract_explicit_urls(resume_text, pdf_hyperlinks)
-    handles = _extract_handles(resume_text)
+    handles = _extract_handles(resume_text, explicit_urls=explicit_raw)
 
     seen: set[str] = set()
     results: list[ExtractedLink] = []
+    explicit_hosts: set[str] = set()
 
     def add(url: str | None, source: LinkSource, platform: str | None = None) -> None:
         if not url or url in seen or len(results) >= limit:
@@ -179,13 +255,15 @@ def extract_links(
         normalized = normalize_url(raw)
         if normalized:
             host = urlparse(normalized).netloc
+            explicit_hosts.add(host)
             add(normalized, "explicit", host)
 
-    inferred_hosts = {link.platform for link in results if link.source == "explicit"}
-
-    for inferred in _infer_links(domain, handles):
-        if inferred.platform and inferred.platform in inferred_hosts:
-            continue
+    for inferred in _infer_links(
+        domain,
+        handles,
+        resume_text,
+        explicit_hosts=explicit_hosts,
+    ):
         add(inferred.url, inferred.source, inferred.platform)
 
     return results
