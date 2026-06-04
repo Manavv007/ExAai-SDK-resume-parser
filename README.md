@@ -1,0 +1,93 @@
+# EXAai-ADK
+
+Standalone resume screening agent: parse resume and job description, enrich via Exa AI, score with Gemini, return JSON for the main hiring platform.
+
+- **Plan:** [`implement.md`](./implement.md)
+- **Architecture (ADK + Exa):** [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md)
+- **Progress:** [`progress.md`](./progress.md)
+- **Platform contract:** [`json-schema.md`](./json-schema.md) · [`CONTRACTS.md`](./CONTRACTS.md)
+
+This service does **not** run on GCP. The main app (Supabase / Next.js) persists results.
+
+## Requirements
+
+- Python 3.12+
+- API keys: [Google AI Studio](https://aistudio.google.com/apikey) (Gemini), [Exa](https://dashboard.exa.ai) (crawl)
+
+## Setup
+
+```bash
+cd EXAai-ADK
+python -m venv .venv
+
+# Windows
+.venv\Scripts\activate
+
+# macOS / Linux
+# source .venv/bin/activate
+
+pip install -e ".[dev]"
+python -m spacy download en_core_web_sm
+copy .env.example .env   # Windows
+# cp .env.example .env   # macOS / Linux
+```
+
+Edit `.env` and set at minimum `GEMINI_API_KEY`, `EXA_API_KEY`, and `API_KEYS`.
+
+## Run locally
+
+```bash
+uvicorn api.main:app --reload --host 0.0.0.0 --port 8080
+```
+
+Health check:
+
+```bash
+curl http://localhost:8080/health
+```
+
+## Call `/screen` (when pipeline is implemented)
+
+Multipart form request:
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `application_id` | Yes | UUID from `job_applications` |
+| `job_id` | Yes | UUID from `jobs` |
+| `resume` | Yes | PDF or DOCX file (max 5 MB) |
+| `jd` | Yes | JD file (PDF/DOCX/txt) or use `jd_text` |
+| `jd_text` | No | Plain-text JD instead of file |
+
+```bash
+curl -X POST http://localhost:8080/screen \
+  -H "Authorization: Bearer dev-local-key-change-me" \
+  -H "X-Request-ID: $(uuidgen)" \
+  -F "application_id=00000000-0000-0000-0000-000000000001" \
+  -F "job_id=00000000-0000-0000-0000-000000000002" \
+  -F "resume=@tests/fixtures/sample_resume.pdf" \
+  -F "jd_text=Senior software engineer with Python and distributed systems."
+```
+
+Until Phases 7–8 are complete, `/screen` returns `501 Not Implemented`.
+
+Response shape: `resume-screening-result-v1` — see [`json-schema.md`](./json-schema.md).
+
+## Tests
+
+```bash
+pytest
+```
+
+Output contract tests live in `tests/unit/test_validator.py`. JSON Schema source of truth: `agent/schema/resume-screening-result-v1.json`.
+
+## Project layout
+
+```
+agent/     Pipeline, tools, security, schema, cache, audit
+api/       FastAPI entrypoint
+tests/     Unit and integration tests
+```
+
+## Main platform handoff
+
+After a successful screen, the main app should call `POST /api/applications/update-score` with `resume_similarity_score` and set `resume_screening_status`. See [`CONTRACTS.md`](./CONTRACTS.md).

@@ -1,0 +1,187 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "resume-screening-result-v1",
+  "title": "ResumeScreeningResult",
+  "description": "Output contract for EXAai-ADK resume screening agent",
+  "type": "object",
+  "required": [
+    "application_id",
+    "job_id",
+    "resume_screening_status",
+    "metadata",
+    "errors"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "application_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "job_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "resume_screening_status": {
+      "type": "string",
+      "enum": ["queued", "processing", "completed", "failed"]
+    },
+    "resume_similarity_score": {
+      "type": "object",
+      "required": ["score", "reasoning"],
+      "additionalProperties": false,
+      "properties": {
+        "score": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "reasoning": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        }
+      }
+    },
+    "requirement_matches": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/requirement_match" },
+      "default": []
+    },
+    "recommendation": {
+      "type": "string",
+      "enum": ["advance", "hold", "reject"]
+    },
+    "recommendation_reasoning": {
+      "type": "string",
+      "minLength": 1
+    },
+    "red_flags": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/red_flag" },
+      "default": []
+    },
+    "sources_crawled": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/crawled_source" },
+      "default": []
+    },
+    "metadata": { "$ref": "#/definitions/metadata" },
+    "errors": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/screening_error" }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "resume_screening_status": { "const": "completed" } },
+        "required": ["resume_screening_status"]
+      },
+      "then": {
+        "required": [
+          "resume_similarity_score",
+          "recommendation",
+          "recommendation_reasoning",
+          "requirement_matches"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": { "resume_screening_status": { "const": "failed" } },
+        "required": ["resume_screening_status"]
+      },
+      "then": {
+        "properties": {
+          "errors": {
+            "type": "array",
+            "minItems": 1
+          }
+        }
+      }
+    }
+  ],
+  "definitions": {
+    "requirement_match": {
+      "type": "object",
+      "required": ["requirement", "requirement_type", "match_score", "evidence"],
+      "additionalProperties": false,
+      "properties": {
+        "requirement": { "type": "string", "minLength": 1 },
+        "requirement_type": {
+          "type": "string",
+          "enum": [
+            "technical_skill",
+            "soft_skill",
+            "experience",
+            "education",
+            "responsibility"
+          ]
+        },
+        "match_score": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "evidence": { "type": "string", "minLength": 1 },
+        "source_quote": { "type": "string" }
+      }
+    },
+    "red_flag": {
+      "type": "object",
+      "required": ["flag", "severity", "evidence"],
+      "additionalProperties": false,
+      "properties": {
+        "flag": { "type": "string", "minLength": 1 },
+        "severity": {
+          "type": "string",
+          "enum": ["low", "medium", "high"]
+        },
+        "evidence": { "type": "string", "minLength": 1 }
+      }
+    },
+    "crawled_source": {
+      "type": "object",
+      "required": ["url", "relevance"],
+      "additionalProperties": false,
+      "properties": {
+        "url": { "type": "string", "format": "uri" },
+        "title": { "type": "string" },
+        "relevance": {
+          "type": "string",
+          "enum": ["high", "medium", "low"]
+        }
+      }
+    },
+    "metadata": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "model_version",
+        "processed_at",
+        "resume_text_chars",
+        "agent_version"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": { "type": "string", "const": "1.0" },
+        "model_version": { "type": "string", "minLength": 1 },
+        "processed_at": { "type": "string", "format": "date-time" },
+        "processing_time_ms": { "type": "integer", "minimum": 0 },
+        "resume_text_chars": { "type": "integer", "minimum": 0 },
+        "job_desc_version": { "type": "string" },
+        "agent_version": { "type": "string", "minLength": 1 }
+      }
+    },
+    "screening_error": {
+      "type": "object",
+      "required": ["code", "message"],
+      "additionalProperties": false,
+      "properties": {
+        "code": { "type": "string", "minLength": 1 },
+        "message": { "type": "string", "minLength": 1 },
+        "source_url": { "type": "string", "format": "uri" }
+      }
+    }
+  }
+}

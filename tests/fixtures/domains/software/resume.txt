@@ -1,0 +1,8 @@
+Alex Chen
+Senior Software Engineer
+Email: alex.chen@example.com
+Phone: +1 (415) 555-0198
+GitHub: https://github.com/alexchen-dev
+LinkedIn: linkedin.com/in/alexchen-dev
+
+Experience: 6 years Python, FastAPI, PostgreSQL, distributed systems.

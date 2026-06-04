@@ -1,0 +1,33 @@
+Python LLM / RAG Pipeline Engineer
+
+Company: EXAai Demo Labs
+Location: Remote (US/EU time zones)
+Experience: Mid-level (3–5 years Python, or 2+ years with strong RAG portfolio)
+
+About the role
+We are hiring an engineer to own our production Retrieval-Augmented Generation (RAG) stack: document ingestion, chunking, embeddings, vector search, LLM orchestration, and evaluation. You will ship reliable Python services that power candidate screening and internal knowledge tools—not one-off notebooks.
+
+Key responsibilities
+- Design and maintain end-to-end RAG pipelines (ingest, chunk, embed, retrieve, rerank, generate).
+- Build async Python APIs (FastAPI) that expose screening and Q&A workflows to product teams.
+- Integrate Gemini or OpenAI-class models with strict JSON outputs and guardrails.
+- Operate vector stores (Pinecone, pgvector, or similar) and tune recall/latency.
+- Add observability: tracing, retrieval metrics, hallucination checks, and regression evals.
+- Collaborate with security on PII redaction, SSRF-safe crawlers, and prompt-injection defenses.
+
+Requirements:
+- Must have: 3+ years professional Python development
+- Must have: Production experience building RAG or LLM-backed applications
+- Must have: FastAPI (or Flask) and REST API design
+- Required: LangChain, LlamaIndex, or equivalent orchestration frameworks
+- Required: Embeddings, chunking strategies, and vector database query patterns
+- Required: Prompt engineering and structured JSON outputs from LLMs
+- Required: Git, code review, and unit/integration testing in Python
+
+Nice to have:
+- Preferred: PostgreSQL and pgvector
+- Preferred: Docker and CI/CD (GitHub Actions)
+- Preferred: Evaluation frameworks (RAGAS, custom golden sets, A/B on retrieval)
+- Bonus: Exa or web enrichment for external evidence in pipelines
+- Bonus: Google ADK or agent tool-calling patterns
+- Bonus: Kubernetes and horizontal scaling of inference workers

@@ -1,0 +1,7 @@
+Jane Doe
+Senior Software Engineer
+Email: jane.doe@example.com
+GitHub: github.com/janedoe
+Portfolio: https://github.com/janedoe?utm_source=resume
+Also on LinkedIn: linkedin.com/in/janedoe
+Twitter: @janedoe

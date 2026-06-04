@@ -1,0 +1,10 @@
+Senior Backend Engineer
+
+Requirements:
+- 5+ years Python experience
+- Must have: distributed systems, PostgreSQL
+- Required: REST API design
+
+Nice to have:
+- Preferred: Kubernetes experience
+- Bonus: GCP certification

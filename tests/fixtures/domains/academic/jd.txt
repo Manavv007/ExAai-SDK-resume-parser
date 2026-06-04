@@ -1,0 +1,10 @@
+Postdoctoral Researcher — Computational Biology
+
+Must have:
+- PhD in biology, bioinformatics, or related field
+- Peer-reviewed publications
+- Python for data analysis and reproducible research
+
+Nice to have:
+- Experience with genomics pipelines
+- Open-science / preprint contributions

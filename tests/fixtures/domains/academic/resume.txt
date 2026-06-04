@@ -1,0 +1,7 @@
+Dr. Samira Patel
+Research Scientist — Computational Biology
+Email: samira.patel@university.example.com
+Google Scholar: https://scholar.google.com/citations?user=samira-patel
+ResearchGate: https://www.researchgate.net/profile/Samira-Patel
+
+Publications: 12 peer-reviewed papers. Python, R, genomics pipelines.

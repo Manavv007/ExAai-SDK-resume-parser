@@ -1,0 +1,63 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "resume_similarity_score",
+    "requirement_matches",
+    "recommendation",
+    "recommendation_reasoning",
+    "red_flags"
+  ],
+  "properties": {
+    "resume_similarity_score": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["score", "reasoning"],
+      "properties": {
+        "score": { "type": "integer", "minimum": 0, "maximum": 100 },
+        "reasoning": { "type": "string", "maxLength": 500 }
+      }
+    },
+    "requirement_matches": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["requirement", "requirement_type", "match_score", "evidence"],
+        "properties": {
+          "requirement": { "type": "string" },
+          "requirement_type": {
+            "type": "string",
+            "enum": [
+              "technical_skill",
+              "soft_skill",
+              "experience",
+              "education",
+              "responsibility"
+            ]
+          },
+          "match_score": { "type": "integer", "minimum": 0, "maximum": 100 },
+          "evidence": { "type": "string", "maxLength": 200 }
+        }
+      }
+    },
+    "recommendation": {
+      "type": "string",
+      "enum": ["advance", "hold", "reject"]
+    },
+    "recommendation_reasoning": { "type": "string", "maxLength": 500 },
+    "red_flags": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["flag", "severity", "evidence"],
+        "properties": {
+          "flag": { "type": "string" },
+          "severity": { "type": "string", "enum": ["low", "medium", "high"] },
+          "evidence": { "type": "string", "maxLength": 200 }
+        }
+      }
+    }
+  }
+}
