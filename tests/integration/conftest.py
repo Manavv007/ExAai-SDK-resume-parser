@@ -74,7 +74,7 @@ def load_llm_fixture(
     base["job_id"] = JOB_ID
     base["resume_similarity_score"] = {
         "score": score,
-        "reasoning": f"Candidate aligns with role requirements.",
+        "reasoning": "Candidate aligns with role requirements.",
     }
 
     if rubric:

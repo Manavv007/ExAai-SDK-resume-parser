@@ -1,4 +1,3 @@
-import json
 
 from agent.tools.scorer import (
     _compact_rubric_for_prompt,

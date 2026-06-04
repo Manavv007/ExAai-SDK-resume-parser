@@ -2,8 +2,6 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
-
 from agent.pipeline import (
     create_screening_agent,
     root_agent,

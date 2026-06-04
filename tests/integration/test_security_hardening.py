@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -15,8 +14,8 @@ from agent.tools.scorer import score_screening
 from agent.tools.validator import validate_result
 from tests.integration.conftest import (
     APP_ID,
-    JOB_ID,
     DOMAIN_CASES,
+    JOB_ID,
     allowlist_ok,
     assert_no_pii_in_payload,
     domain_paths,

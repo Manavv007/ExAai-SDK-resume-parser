@@ -356,7 +356,8 @@ requirements (array of objects, each with:
 
 Classify requirement_type by meaning for ANY industry (e.g. RN license -> education,
 years of experience -> experience, patient communication -> soft_skill).
-Also include must_have (string array) and nice_to_have (string array) as duplicates of requirements text.
+Also include must_have and nice_to_have (string arrays) as duplicates of
+requirements text.
 
 JOB DESCRIPTION:
 {jd_text[:12000]}

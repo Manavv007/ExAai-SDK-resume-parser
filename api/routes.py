@@ -12,7 +12,6 @@ from agent.pipeline import run_screening_async
 from api.auth import require_api_key
 from api.errors import screening_error_from_exception
 from api.file_validation import (
-    FileValidationError,
     validate_upload_bytes,
     validate_uuid,
 )

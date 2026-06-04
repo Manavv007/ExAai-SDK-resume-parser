@@ -10,8 +10,8 @@ from agent.pipeline import run_screening_async
 from agent.prep import prepare_screening_state
 from tests.integration.conftest import (
     APP_ID,
-    JOB_ID,
     DOMAIN_CASES,
+    JOB_ID,
     DomainCase,
     allowlist_ok,
     assert_no_pii_in_payload,
