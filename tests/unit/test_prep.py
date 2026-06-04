@@ -24,3 +24,6 @@ def test_prepare_screening_state_redacts_and_extracts_links() -> None:
     assert state["redaction_count"] >= 1
     assert len(state["rubric"]) >= 1
     assert "Evaluate only technical skills" in state["rubric_preamble"]
+    assert "Resume-first scoring" in state["rubric_preamble"]
+    assert "profile_trust_by_url" in state
+    assert isinstance(state["identity_red_flags"], list)

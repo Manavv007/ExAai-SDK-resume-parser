@@ -7,6 +7,14 @@ from dataclasses import asdict
 from typing import Any
 
 from agent.security.pii_redactor import redact_text
+from agent.security.profile_identity import (
+    IDENTITY_SCORING_RULES,
+    assess_profile_links,
+    assessments_to_dicts,
+    build_identity_red_flags,
+    should_cap_score_for_identity,
+    trust_map_from_assessments,
+)
 from agent.tools.link_extractor import extract_links
 from agent.tools.parser import parse_file, parse_jd_structured
 from agent.tools.rubric_builder import build_rubric_bundle
@@ -47,6 +55,8 @@ def prepare_screening_state(
         pdf_hyperlinks=resume_doc.hyperlinks,
     )
     rubric_bundle = build_rubric_bundle(jd_structured)
+    profile_assessments = assess_profile_links(resume_doc.text, links)
+    profile_trust_by_url = trust_map_from_assessments(profile_assessments)
 
     return {
         "application_id": application_id,
@@ -62,6 +72,14 @@ def prepare_screening_state(
         "redaction_count": redaction_summary.redaction_count,
         "enriched_contents": [],
         "rubric": rubric_bundle["rubric"],
-        "rubric_preamble": rubric_bundle["rubric_preamble"],
+        "rubric_preamble": (
+            f"{rubric_bundle['rubric_preamble']}\n{IDENTITY_SCORING_RULES}"
+        ),
+        "profile_trust": assessments_to_dicts(profile_assessments),
+        "profile_trust_by_url": profile_trust_by_url,
+        "identity_red_flags": build_identity_red_flags(profile_assessments),
+        "profile_identity_cap_score": should_cap_score_for_identity(
+            profile_assessments
+        ),
         "prep_latency_ms": int((time.monotonic() - started) * 1000),
     }

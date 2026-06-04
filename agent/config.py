@@ -18,6 +18,12 @@ class Settings(BaseSettings):
     exa_api_key: str = ""
     api_keys: str = Field(default="", description="Comma-separated Bearer tokens")
 
+    infer_profile_urls: bool = False
+    profile_scoring_mode: str = Field(
+        default="strict",
+        description="strict: limited profiles omit crawl body; balanced: include with warning",
+    )
+
     max_urls_per_resume: int = 10
     url_fetch_timeout_seconds: int = 5
     content_token_cap: int = 8000

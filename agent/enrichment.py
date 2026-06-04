@@ -60,12 +60,15 @@ def fetch_profile_url(state: dict[str, Any], url: str) -> dict[str, Any]:
             return {"ok": False, "url": url, "error": "exa_fetch_failed", "message": str(exc)}
 
     sanitized = sanitize_external_content(raw, url, max_chars=settings.content_token_cap)
+    trust_by_url = state.get("profile_trust_by_url") or {}
+    profile_trust = trust_by_url.get(url, "scoring_limited")
     enriched: list[dict[str, Any]] = list(state.get("enriched_contents") or [])
     enriched.append(
         {
             "url": url,
             "content": sanitized,
             "domain_category": allow.domain_category,
+            "profile_trust": profile_trust,
             "ok": True,
         }
     )

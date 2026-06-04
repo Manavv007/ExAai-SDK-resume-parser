@@ -38,7 +38,11 @@ def test_pdf_hyperlinks_merged() -> None:
     assert any("from-pdf-annotation" in link.url for link in links)
 
 
-def test_infer_technical_platforms_from_handle() -> None:
+def test_infer_technical_platforms_from_handle(monkeypatch) -> None:
+    monkeypatch.setenv("INFER_PROFILE_URLS", "true")
+    from agent.config import get_settings
+
+    get_settings.cache_clear()
     jd = JdStructured(domain="technical", must_have=["Python"])
     text = "GitHub: @coder123 — active on hackerrank for coding challenges."
     links = extract_links(text, jd=jd, max_urls=10)
@@ -80,7 +84,11 @@ def test_max_urls_cap() -> None:
     assert len(links) == 3
 
 
-def test_jd_domain_drives_inference() -> None:
+def test_jd_domain_drives_inference(monkeypatch) -> None:
+    monkeypatch.setenv("INFER_PROFILE_URLS", "true")
+    from agent.config import get_settings
+
+    get_settings.cache_clear()
     jd = parse_jd_structured(
         "Graphic Designer\nRequirements:\n- Figma",
         use_llm=False,

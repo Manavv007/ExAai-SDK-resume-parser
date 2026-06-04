@@ -11,6 +11,11 @@ from uuid import UUID
 
 from agent.config import get_settings
 from agent.schema import SCHEMA_PATH
+from agent.security.profile_identity import (
+    apply_identity_score_cap,
+    format_enriched_content_for_scoring,
+    merge_identity_red_flags,
+)
 from agent.tools.rubric_builder import (
     RubricCriterion,
     build_rubric,
@@ -131,7 +136,13 @@ def _build_scoring_prompt(
     enriched_contents: list[dict[str, Any]],
 ) -> str:
     external_blocks = "\n\n".join(
-        item.get("content") or "" for item in enriched_contents if item.get("content")
+        format_enriched_content_for_scoring(
+            url=str(item.get("url") or ""),
+            content=str(item.get("content") or ""),
+            profile_trust=str(item.get("profile_trust") or "scoring_limited"),
+        )
+        for item in enriched_contents
+        if item.get("url")
     )
     rubric_for_prompt = _compact_rubric_for_prompt(rubric)
     rubric_json = json.dumps(rubric_for_prompt, indent=2)
@@ -201,6 +212,8 @@ def normalize_screening_result(
     rubric: list[RubricCriterion] | list[dict[str, Any]],
     enriched_contents: list[dict[str, Any]],
     processing_time_ms: int | None = None,
+    identity_red_flags: list[dict[str, str]] | None = None,
+    profile_identity_cap_score: bool = False,
 ) -> dict[str, Any]:
     """Map model output onto the platform contract and apply score caps."""
     settings = get_settings()
@@ -218,6 +231,8 @@ def normalize_screening_result(
         requirement_matches = []
 
     score = enforce_must_have_score_cap(score, requirement_matches, rubric)
+    if profile_identity_cap_score:
+        score = apply_identity_score_cap(score)
 
     recommendation = _normalize_recommendation(raw.get("recommendation"))
     if score >= 75 and recommendation == "hold":
@@ -240,7 +255,10 @@ def normalize_screening_result(
         "recommendation_reasoning": str(
             raw.get("recommendation_reasoning") or reasoning
         )[:2000],
-        "red_flags": raw.get("red_flags") or [],
+        "red_flags": merge_identity_red_flags(
+            raw.get("red_flags") or [],
+            identity_red_flags or [],
+        ),
         "sources_crawled": sources,
         "metadata": {
             "schema_version": "1.0",
@@ -308,6 +326,8 @@ def score_screening(
     enriched_contents: list[dict[str, Any]] | None = None,
     processing_time_ms: int | None = None,
     correction_prompt: str | None = None,
+    identity_red_flags: list[dict[str, str]] | None = None,
+    profile_identity_cap_score: bool = False,
 ) -> dict[str, Any]:
     """
     Run Gemini judge and return normalized resume-screening-result-v1 dict.
@@ -345,6 +365,8 @@ def score_screening(
                 rubric=rubric_models,
                 enriched_contents=enriched,
                 processing_time_ms=processing_time_ms,
+                identity_red_flags=identity_red_flags,
+                profile_identity_cap_score=profile_identity_cap_score,
             )
             outcome = validate_result_detailed(normalized)
             if outcome.ok:
@@ -384,4 +406,6 @@ def score_screening_from_state(state: dict[str, Any]) -> dict[str, Any]:
         enriched_contents=state.get("enriched_contents") or [],
         processing_time_ms=state.get("processing_time_ms"),
         correction_prompt=state.get("correction_prompt"),
+        identity_red_flags=state.get("identity_red_flags") or [],
+        profile_identity_cap_score=bool(state.get("profile_identity_cap_score")),
     )

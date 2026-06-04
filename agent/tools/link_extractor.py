@@ -258,13 +258,14 @@ def extract_links(
             explicit_hosts.add(host)
             add(normalized, "explicit", host)
 
-    for inferred in _infer_links(
-        domain,
-        handles,
-        resume_text,
-        explicit_hosts=explicit_hosts,
-    ):
-        add(inferred.url, inferred.source, inferred.platform)
+    if get_settings().infer_profile_urls:
+        for inferred in _infer_links(
+            domain,
+            handles,
+            resume_text,
+            explicit_hosts=explicit_hosts,
+        ):
+            add(inferred.url, inferred.source, inferred.platform)
 
     return results
 
