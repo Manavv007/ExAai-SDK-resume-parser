@@ -130,6 +130,7 @@ def test_crawl_injection_not_in_prompt_or_evidence(mock_generate, test_settings)
                 "url": "https://github.com/alexchen-dev",
                 "content": sanitized_block,
                 "domain_category": "code",
+                "profile_trust": "scoring_trusted",
             }
         ],
     )

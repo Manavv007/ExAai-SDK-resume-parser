@@ -197,7 +197,7 @@ def _detect_domain(text: str) -> str:
 def _detect_seniority(text: str) -> str | None:
     lowered = text.lower()
     for level in ("principal", "staff", "senior", "lead", "junior", "intern"):
-        if level in lowered:
+        if re.search(rf"\b{re.escape(level)}\b", lowered):
             return level
     return None
 

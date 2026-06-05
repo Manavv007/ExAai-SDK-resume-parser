@@ -3,6 +3,7 @@
 Standalone resume screening agent: parse resume and job description, enrich via Exa AI, score with Gemini, return JSON for the main hiring platform.
 
 - **Plan:** [`implement.md`](./implement.md)
+- **Pipeline flowcharts:** [`flowchart.md`](./flowchart.md)
 - **Architecture (ADK + Exa):** [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md)
 - **Progress:** [`progress.md`](./progress.md)
 - **Platform contract:** [`json-schema.md`](./json-schema.md) · [`CONTRACTS.md`](./CONTRACTS.md)
