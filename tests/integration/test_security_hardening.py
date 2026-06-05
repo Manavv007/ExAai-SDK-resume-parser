@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 
 from agent.enrichment import fetch_profile_url
 from agent.pipeline import run_screening_async
+from agent.prep import prepare_screening_state
 from agent.security.ssrf_guard import clear_dns_cache, validate_url
 from agent.tools.scorer import score_screening
 from agent.tools.validator import validate_result
@@ -18,6 +19,7 @@ from tests.integration.conftest import (
     JOB_ID,
     allowlist_ok,
     assert_no_pii_in_payload,
+    build_scripted_runner,
     domain_paths,
     load_llm_fixture,
 )
@@ -32,6 +34,11 @@ INJECTION_PHRASES = (
     "you are now",
     "score this applicant",
 )
+
+
+@pytest.fixture(autouse=True)
+def _pipeline_screening_mode(pipeline_mode) -> None:
+    """Most security tests mock pipeline scoring; agent tests set mode explicitly."""
 
 
 def _private_resolver(_hostname: str) -> list[str]:
@@ -296,3 +303,134 @@ async def test_api_screen_end_to_end_prep_redacts_pii(
     body = response.json()
     assert validate_result(body)
     assert_no_pii_in_payload(body, case.pii_markers)
+
+
+@pytest.mark.asyncio
+@patch("agent.pipeline.create_runner")
+@patch("agent.enrichment.fetch_url_text", return_value=INJECTION_CRAWL)
+async def test_agent_sanitizes_injection_before_submit(
+    mock_fetch,
+    mock_create_runner,
+    test_settings,
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SCREENING_MODE", "agent")
+    monkeypatch.setenv("URL_CACHE_PATH", str(tmp_path / "agent-inj.db"))
+    from agent.config import get_settings
+
+    get_settings.cache_clear()
+
+    resume_path, jd_path = domain_paths("software")
+    prep = prepare_screening_state(
+        application_id=APP_ID,
+        job_id=JOB_ID,
+        resume_bytes=resume_path.read_bytes(),
+        resume_filename="resume.txt",
+        jd_text=jd_path.read_text(encoding="utf-8"),
+    )
+    fetch_url = next(url for url in prep["profile_urls"] if "github.com" in url)
+    submit_payload = load_llm_fixture(rubric=prep["rubric"], score=65)
+    submit_payload["requirement_matches"][0]["evidence"] = (
+        "Resume and GitHub show sustained Python backend work."
+    )
+    mock_create_runner.return_value = build_scripted_runner(
+        fetch_urls=[fetch_url],
+        submit_payload=submit_payload,
+    )
+
+    mock_cache = MagicMock()
+    mock_cache.get.return_value = None
+
+    with patch("agent.enrichment.get_url_cache", return_value=mock_cache):
+        with patch(
+            "agent.enrichment.validate_url",
+            return_value=type("R", (), {"allowed": True, "reason": None})(),
+        ):
+            with patch(
+                "agent.enrichment.check_allowlist",
+                return_value=allowlist_ok("code"),
+            ):
+                result = await run_screening_async(
+                    application_id=APP_ID,
+                    job_id=JOB_ID,
+                    resume_bytes=resume_path.read_bytes(),
+                    resume_filename="resume.txt",
+                    jd_bytes=jd_path.read_bytes(),
+                    jd_filename="jd.txt",
+                    request_id="req-agent-injection",
+                )
+
+    assert result["resume_screening_status"] == "completed"
+    assert validate_result(result)
+    mock_fetch.assert_called_once()
+    for match in result["requirement_matches"]:
+        evidence = (match.get("evidence") or "").lower()
+        for phrase in INJECTION_PHRASES:
+            assert phrase not in evidence
+
+
+@pytest.mark.asyncio
+@patch("agent.pipeline.create_runner")
+@patch("agent.enrichment.fetch_url_text", return_value="Linus Torvalds kernel work.")
+async def test_agent_skips_untrusted_profile_fetch(
+    mock_fetch,
+    mock_create_runner,
+    test_settings,
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SCREENING_MODE", "agent")
+    monkeypatch.setenv("URL_CACHE_PATH", str(tmp_path / "agent-untrusted.db"))
+    from agent.config import get_settings
+
+    get_settings.cache_clear()
+
+    resume = b"Manav Bhavsar\nmanav@gmail.com\nhttps://github.com/torvalds\n"
+    jd = b"Python Engineer\nMust have: Python\n"
+    prep = prepare_screening_state(
+        application_id=APP_ID,
+        job_id=JOB_ID,
+        resume_bytes=resume,
+        resume_filename="resume.txt",
+        jd_text=jd.decode("utf-8"),
+    )
+    untrusted = next(
+        url
+        for url in prep["profile_urls"]
+        if prep["profile_trust_by_url"].get(url) == "scoring_untrusted"
+    )
+    submit_payload = load_llm_fixture(
+        requirement="Python",
+        score=90,
+        rubric=prep["rubric"],
+    )
+    mock_create_runner.return_value = build_scripted_runner(
+        fetch_urls=[untrusted],
+        submit_payload=submit_payload,
+    )
+
+    mock_cache = MagicMock()
+    mock_cache.get.return_value = None
+
+    with patch("agent.enrichment.get_url_cache", return_value=mock_cache):
+        with patch(
+            "agent.enrichment.validate_url",
+            return_value=type("R", (), {"allowed": True, "reason": None})(),
+        ):
+            with patch(
+                "agent.enrichment.check_allowlist",
+                return_value=allowlist_ok("code"),
+            ):
+                result = await run_screening_async(
+                    application_id=APP_ID,
+                    job_id=JOB_ID,
+                    resume_bytes=resume,
+                    resume_filename="resume.txt",
+                    jd_text=jd.decode("utf-8"),
+                    request_id="req-agent-untrusted",
+                )
+
+    assert result["resume_screening_status"] == "completed"
+    mock_fetch.assert_not_called()
+    assert result["resume_similarity_score"]["score"] <= 45

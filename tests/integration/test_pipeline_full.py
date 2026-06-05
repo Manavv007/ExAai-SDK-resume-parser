@@ -14,6 +14,11 @@ from agent.tools.validator import validate_result
 FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"
 
 
+@pytest.fixture(autouse=True)
+def _pipeline_screening_mode(pipeline_mode) -> None:
+    """Pipeline integration tests require SCREENING_MODE=pipeline."""
+
+
 @pytest.mark.asyncio
 @patch("agent.tools.scorer._generate_json")
 @patch("agent.enrichment.fetch_url_text", return_value="Open source Python projects.")

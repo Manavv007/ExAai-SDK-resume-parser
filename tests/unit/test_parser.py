@@ -48,7 +48,8 @@ def test_parse_jd_heuristic_must_and_nice() -> None:
     structured = parse_jd_structured(jd_text, use_llm=False)
 
     assert structured.domain == "technical"
-    assert structured.seniority is None  # Mid-level JD; no whole-word seniority keyword
+    assert structured.seniority == "mid"
+    assert structured.industry == "EXAai Demo Labs"
     assert any("Python" in item for item in structured.must_have)
     assert any("Kubernetes" in item for item in structured.nice_to_have)
 

@@ -8,6 +8,14 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
 
+import pytest
+from google.adk.apps.app import App
+from google.adk.models.llm_response import LlmResponse
+from google.adk.runners import Runner
+from google.adk.sessions.in_memory_session_service import InMemorySessionService
+from google.genai import types
+
+from agent.pipeline import create_screening_agent
 from agent.tools.validator import validate_result
 
 FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"
@@ -120,3 +128,90 @@ def assert_no_pii_in_payload(payload: Any, markers: tuple[str, ...]) -> None:
     lowered = text.lower()
     for marker in markers:
         assert marker.lower() not in lowered, f"PII leaked: {marker}"
+
+
+@pytest.fixture
+def pipeline_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Force legacy enrich-all pipeline for tests that mock score_screening."""
+    monkeypatch.setenv("SCREENING_MODE", "pipeline")
+    from agent.config import get_settings
+
+    get_settings.cache_clear()
+
+
+def agent_function_call_response(
+    *,
+    call_id: str,
+    name: str,
+    args: dict[str, Any] | None = None,
+) -> LlmResponse:
+    return LlmResponse(
+        content=types.Content(
+            role="model",
+            parts=[
+                types.Part(
+                    function_call=types.FunctionCall(
+                        id=call_id,
+                        name=name,
+                        args=args or {},
+                    )
+                )
+            ],
+        )
+    )
+
+
+def agent_text_response(text: str = "Screening complete.") -> LlmResponse:
+    return LlmResponse(
+        content=types.Content(
+            role="model",
+            parts=[types.Part(text=text)],
+        )
+    )
+
+
+def scripted_agent_callback(
+    *,
+    fetch_urls: list[str],
+    submit_payload: dict[str, Any],
+):
+    """Mock Gemini: fetch_profiles → submit_screening_result (no list step)."""
+
+    turn = 0
+
+    async def _callback(*, callback_context, llm_request):
+        nonlocal turn
+        turn += 1
+        if turn == 1:
+            return agent_function_call_response(
+                call_id="call-fetch",
+                name="fetch_profiles",
+                args={"urls": fetch_urls},
+            )
+        if turn == 2:
+            return agent_function_call_response(
+                call_id="call-submit",
+                name="submit_screening_result",
+                args={"result": submit_payload},
+            )
+        return agent_text_response()
+
+    return _callback
+
+
+def build_scripted_runner(
+    *,
+    fetch_urls: list[str],
+    submit_payload: dict[str, Any],
+) -> Runner:
+    agent = create_screening_agent(
+        before_model_callback=scripted_agent_callback(
+            fetch_urls=fetch_urls,
+            submit_payload=submit_payload,
+        )
+    )
+    return Runner(
+        app=App(name="exaai_adk", root_agent=agent),
+        session_service=InMemorySessionService(),
+        auto_create_session=False,
+    )

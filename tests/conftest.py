@@ -17,5 +17,7 @@ def test_settings(monkeypatch: pytest.MonkeyPatch) -> Settings:
     monkeypatch.setenv("GEMINI_API_KEY", "test-gemini")
     monkeypatch.setenv("EXA_API_KEY", "test-exa")
     monkeypatch.setenv("API_KEYS", "test-key")
+    monkeypatch.setenv("LLM_PROVIDER", "gemini")
+    monkeypatch.delenv("OPEN_ROUTER_API_KEY", raising=False)
     get_settings.cache_clear()
     return get_settings()

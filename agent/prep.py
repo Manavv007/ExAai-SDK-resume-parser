@@ -16,7 +16,7 @@ from agent.security.profile_identity import (
     trust_map_from_assessments,
 )
 from agent.tools.link_extractor import extract_links
-from agent.tools.parser import parse_file, parse_jd_structured
+from agent.tools.parser import parse_file, parse_jd_structured, parse_resume_structured
 from agent.tools.rubric_builder import build_rubric_bundle
 
 
@@ -39,6 +39,7 @@ def prepare_screening_state(
     started = time.monotonic()
 
     resume_doc = parse_file(resume_bytes, resume_filename)
+    resume_structured = parse_resume_structured(resume_doc.text)
     if jd_text:
         jd_raw = jd_text.strip()
     elif jd_bytes:
@@ -62,6 +63,7 @@ def prepare_screening_state(
         "application_id": application_id,
         "job_id": job_id,
         "resume_text": resume_text,
+        "resume_structured": asdict(resume_structured),
         "jd_raw": jd_raw,
         "jd_structured": asdict(jd_structured),
         "profile_urls": [link.url for link in links],

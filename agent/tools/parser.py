@@ -6,7 +6,10 @@ import io
 import json
 import re
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
+
+if TYPE_CHECKING:
+    from agent.tools.local_parser import ResumeStructured
 
 import pdfplumber
 from docx import Document
@@ -126,8 +129,10 @@ def parse_file(content: bytes, filename: str = "") -> ParsedDocument:
         return _parse_pdf(content)
     if fmt == "docx":
         return _parse_docx(content)
+    from agent.tools.local_parser import normalize_extracted_text
+
     return ParsedDocument(
-        text=_decode_text(content),
+        text=normalize_extracted_text(_decode_text(content)),
         hyperlinks=[],
         format="txt",
     )
@@ -143,6 +148,8 @@ def _decode_text(content: bytes) -> str:
 
 
 def _parse_pdf(content: bytes) -> ParsedDocument:
+    from agent.tools.local_parser import normalize_extracted_text
+
     text_parts: list[str] = []
     links: list[str] = []
 
@@ -157,7 +164,7 @@ def _parse_pdf(content: bytes) -> ParsedDocument:
                     links.append(uri)
 
     return ParsedDocument(
-        text="\n\n".join(text_parts).strip(),
+        text=normalize_extracted_text("\n\n".join(text_parts)),
         hyperlinks=links,
         format="pdf",
     )
@@ -177,8 +184,10 @@ def _parse_docx(content: bytes) -> ParsedDocument:
                 if cell.text.strip():
                     parts.append(cell.text)
 
+    from agent.tools.local_parser import normalize_extracted_text
+
     return ParsedDocument(
-        text="\n".join(parts).strip(),
+        text=normalize_extracted_text("\n".join(parts)),
         hyperlinks=[],
         format="docx",
     )
@@ -265,11 +274,12 @@ def parse_jd_structured(jd_text: str, *, use_llm: bool | None = None) -> JdStruc
     """
     Extract structured JD fields for rubric building.
 
-    Uses Gemini when ``GEMINI_API_KEY`` is set and ``use_llm`` is not False;
-    falls back to heuristics on failure or when disabled.
+    Uses Gemini when ``JD_PARSE_USE_LLM=true``, ``GEMINI_API_KEY`` is set, and
+    ``use_llm`` is not False; falls back to heuristics on failure or when disabled.
     """
     if use_llm is None:
-        use_llm = bool(get_settings().gemini_api_key.strip())
+        settings = get_settings()
+        use_llm = settings.jd_parse_use_llm and bool(settings.gemini_api_key.strip())
 
     if use_llm:
         try:
@@ -323,16 +333,16 @@ def _parse_requirements_from_gemini(data: dict[str, Any]) -> list[JdRequirement]
 
 
 def _parse_jd_heuristic(jd_text: str) -> JdStructured:
-    must, nice = _extract_requirement_lines(jd_text)
-    return JdStructured(
-        job_title=_extract_title(jd_text),
-        domain=_detect_domain(jd_text),
-        industry=None,
-        seniority=_detect_seniority(jd_text),
-        must_have=must,
-        nice_to_have=nice,
-        requirements=_requirements_from_lists(must, nice),
-    )
+    from agent.tools.local_parser import parse_jd_local
+
+    return parse_jd_local(jd_text)
+
+
+def parse_resume_structured(text: str) -> "ResumeStructured":
+    """Extract resume highlights locally (no LLM)."""
+    from agent.tools.local_parser import ResumeStructured, parse_resume_local
+
+    return parse_resume_local(text)
 
 
 def _parse_jd_with_gemini(jd_text: str) -> JdStructured:

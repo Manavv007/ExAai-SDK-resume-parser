@@ -113,6 +113,17 @@ Track progress against [`implement.md`](./implement.md). Check boxes when a phas
 
 ---
 
+## Phase 12 — ADK agent migration (`docs/AGENT_MIGRATION.md`)
+
+- [x] Phase 1: `fetch_profiles` batch tool
+- [x] Phase 2: `submit_screening_result` tool
+- [x] Phase 3: Agent definition + instruction + user message builder
+- [x] Phase 4: `run_screening_agent_async` + Runner integration
+- [x] Phase 5: `SCREENING_MODE` feature flag + API branch
+- [x] Phase 6: Agent-path integration tests (domain + security), docs, default `agent`
+
+---
+
 ## Phase 10 — Main platform integration
 
 - [ ] Document request/response for main app team

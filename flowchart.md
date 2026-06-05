@@ -105,6 +105,14 @@ Multipart form
         ▼
    run_screening_async(...)
         │
+        ├── prep (always) ──► prepare_screening_state()
+        │
+        ├── SCREENING_MODE=agent ──► run_screening_agent_async (ADK Runner)
+        │         • list_candidate_profile_urls / fetch_profiles (agent picks URLs)
+        │         • submit_screening_result (caps + validate in tool)
+        │
+        └── SCREENING_MODE=pipeline ──► enrich all URLs → score_with_validation (legacy fallback)
+        │
         ├── ValueError ───────────────────────────► 400
         ├── Gemini 429 / key error ─────────────────► 502 (mapped in api/errors.py)
         └── success ──────────────────────────────► 200 (completed) or 422 (failed)
@@ -228,7 +236,10 @@ Resume raw text
 
 ---
 
-## 4. Phase 3 — Enrichment (Exa)
+## 4. Enrichment (Exa)
+
+**Mode:** `SCREENING_MODE=pipeline` runs this section for **all** URLs automatically.  
+`SCREENING_MODE=agent` skips it here — the ADK agent calls `fetch_profiles` per URL instead.
 
 **File:** `agent/enrichment.py`
 
@@ -525,8 +536,9 @@ Explicit URL on resume  ≠  trusted for scoring
 ┌───────────────────┬────────────────────┬─────────────────────────────┐
 │ scoring_trusted   │ scoring_limited    │ scoring_untrusted           │
 ├───────────────────┼────────────────────┼─────────────────────────────┤
-│ Fetch?      YES   │ Fetch?       YES   │ Fetch?               YES    │
-│ Store body? YES   │ Store body?  YES   │ Store body?          YES    │
+│ Fetch?      YES   │ Fetch?       YES   │ Fetch?               NO     │
+│ Store body? YES   │ Store body?  YES   │ Store body?          NO     │
+│                   │                    │ Stub only (no Exa call)     │
 │ In prompt?  FULL  │ strict: STUB     │ In prompt?  OMIT stub only  │
 │                   │ balanced: BODY+WARN│ (~120 chars, no crawl body) │
 │ Use for score?    │ Resume must      │ Must NOT increase scores    │
@@ -748,9 +760,15 @@ Final JSON to client
 **File:** `.env` / `agent/config.py`
 
 ```
+SCREENING_MODE          agent (default) = ADK Runner + tools; pipeline = enrich all then score
+                        agent = ADK Runner; agent picks URLs via fetch_profiles
+
 GEMINI_API_KEY          JD parsing (Gemini) + final scoring (required for LLM path)
 GEMINI_MODEL_ID         Model for JD parse + evaluator (e.g. gemini-2.5-flash)
 EXA_API_KEY             Profile URL enrichment
+
+MAX_AGENT_TURNS         default 8 (agent mode LLM round-trips)
+AGENT_RUN_TIMEOUT_SECONDS default 120
 
 INFER_PROFILE_URLS      false (default) = only explicit resume URLs
                         true = guess Kaggle/GitHub/Behance etc. from handles

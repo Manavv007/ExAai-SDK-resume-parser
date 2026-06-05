@@ -4,6 +4,7 @@ Standalone resume screening agent: parse resume and job description, enrich via 
 
 - **Plan:** [`implement.md`](./implement.md)
 - **Pipeline flowcharts:** [`flowchart.md`](./flowchart.md)
+- **ADK agent migration (phased):** [`docs/AGENT_MIGRATION.md`](./docs/AGENT_MIGRATION.md)
 - **Architecture (ADK + Exa):** [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md)
 - **Progress:** [`progress.md`](./progress.md)
 - **Platform contract:** [`json-schema.md`](./json-schema.md) · [`CONTRACTS.md`](./CONTRACTS.md)
@@ -35,6 +36,19 @@ copy .env.example .env   # Windows
 
 Edit `.env` and set at minimum `GEMINI_API_KEY`, `EXA_API_KEY`, and `API_KEYS`.
 
+**Two different keys (easy to mix up):**
+
+| `.env` variable | Purpose |
+|-----------------|--------|
+| `GEMINI_API_KEY` | Server → Google Gemini (never paste into Swagger) |
+| `API_KEYS` | Clients → your `/screen` endpoint (paste into Swagger **api_key** field) |
+
+**Default:** `SCREENING_MODE=agent` — ADK Runner; the agent picks profile URLs via tools. Set `SCREENING_MODE=pipeline` for the legacy enrich-all-then-score path.
+
+**Fewer Gemini calls:** `JD_PARSE_USE_LLM=false` (default) uses local JD/resume parsing; `MAX_AGENT_TURNS=8` caps agent turns.
+
+**OpenRouter (optional):** set `OPEN_ROUTER_API_KEY` and `LLM_PROVIDER=openrouter` (or `auto`). Default `OPENROUTER_MODEL_ID=openrouter/free` auto-picks a free model with tool-calling support; use `openai/gpt-oss-20b:free` for a specific fast model. On 429 rate limits, retries and `OPENROUTER_FALLBACK_MODEL_IDS` apply automatically.
+
 ## Run locally
 
 ```bash
@@ -47,7 +61,7 @@ Health check:
 curl http://localhost:8080/health
 ```
 
-## Call `/screen` (when pipeline is implemented)
+## Call `/screen`
 
 Multipart form request:
 
@@ -69,9 +83,7 @@ curl -X POST http://localhost:8080/screen \
   -F "jd_text=Senior software engineer with Python and distributed systems."
 ```
 
-Until Phases 7–8 are complete, `/screen` returns `501 Not Implemented`.
-
-Response shape: `resume-screening-result-v1` — see [`json-schema.md`](./json-schema.md).
+Response shape: `resume-screening-result-v1` — see [`json-schema.md`](./json-schema.md). Migration phases: [`docs/AGENT_MIGRATION.md`](./docs/AGENT_MIGRATION.md).
 
 ## Tests
 

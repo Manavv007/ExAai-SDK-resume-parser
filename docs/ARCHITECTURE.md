@@ -1,64 +1,65 @@
 # EXAai-ADK — Architecture (Google ADK + Exa)
 
-## Your expected flow (yes — this is the target)
+## Production flow (`SCREENING_MODE=agent`, default)
 
 ```text
-JD + resume (files)
-    → deterministic prep (parse, redact, link list, JD structured)
-    → ADK Agent (Gemini) reads session context
-    → LLM calls tools: fetch_profile_content(url) …  [Exa inside tool]
-    → LLM produces resume-screening-result-v1 JSON
-    → validate → return to main app
+POST /screen (multipart: resume + JD)
+    → prepare_screening_state (parse, PII redact, rubric, profile trust map)
+    → ADK Runner + screening Agent (Gemini)
+        → fetch_profiles (selected allowlisted URLs; Exa inside tool)
+        → optional list_candidate_profile_urls only if meta needed
+        → submit_screening_result
+    → normalize + caps + validate_result → audit log → JSON response
 ```
 
-The **judging model** decides **which allowlisted URLs** are worth fetching. It does **not** call Exa directly — it calls our **ADK `FunctionTool`**, which runs SSRF + allowlist + `exa-py` + sanitization.
+The **judging model** decides **which allowlisted URLs** are worth fetching. It does not call Exa directly — it calls ADK **`FunctionTool`** wrappers that run SSRF, allowlist, cache, `exa-py`, and sanitization.
 
-## What we built first (Phases 2–4)
-
-Plain Python modules (`parser`, `link_extractor`, `pii_redactor`, etc.) so logic is **testable without the LLM**. They are **wrapped as ADK tools** — not thrown away.
+Set `SCREENING_MODE=pipeline` to use the legacy path: enrich **all** profile URLs, then one Gemini scoring call. Same prep, caps, and validation on both paths.
 
 ## Two layers
 
 | Layer | Technology | Role |
 |-------|------------|------|
-| **Prep** | Python (`agent/prep.py`) | Always runs first: parse PDF/DOCX, `jd_structured`, redact resume, extract URLs → `session.state` |
-| **Screening agent** | `google-adk` `Agent` + `Runner` | Gemini orchestrates; calls tools; writes verdict JSON |
+| **Prep** | Python (`agent/prep.py`) | Always runs first: parse PDF/DOCX, `jd_structured`, redact resume, extract URLs, identity trust → session state |
+| **Screening** | `google-adk` `Agent` + `Runner` (default) or pipeline scorer | Gemini orchestrates tools or scores enriched bundle |
 
-## ADK SDK usage
+## ADK agent tools
 
-```python
-from google.adk import Agent, Runner
-from google.adk.tools import ToolContext  # alias of Context
+| Tool | Purpose |
+|------|---------|
+| `list_candidate_profile_urls` | Optional — URLs + trust already in brief; use for `profile_url_meta` only |
+| `fetch_profiles` | Batch fetch allowlisted URLs (skips `scoring_untrusted`; session dedup + budget) |
+| `submit_screening_result` | Writes `resume-screening-result-v1` into session; triggers normalize + caps |
 
-screening_agent = Agent(
-    model="gemini-2.0-flash",
-    instruction="...",
-    tools=[fetch_profile_content, list_candidate_profile_urls],
-)
-```
-
-- **`Agent`** (`LlmAgent`): model with **function calling** (AutoFlow).
-- **`FunctionTool`**: wraps Python functions; LLM chooses when to invoke.
-- **`Runner`**: executes agent + session + events (wired in Phase 8 API).
-
-`SequentialAgent` in older docs is **deprecated** in ADK 2.x; we use **`Agent` + tools** (and optional `Workflow` for purely deterministic graphs later).
+Prep modules (`parser`, `link_extractor`, `pii_redactor`, `rubric_builder`, etc.) stay plain Python for unit tests; enrichment and scoring are invoked through tools or the pipeline path.
 
 ## Security inside tools (non-negotiable)
 
-Even when the LLM picks URLs, every `fetch_profile_content` call:
+Every `fetch_profiles` URL:
 
-1. SSRF guard  
-2. Domain allowlist  
-3. Exa fetch (or cache, Phase 5)  
-4. Sanitize + delimit content before returning to the model  
+1. SSRF guard (`security/ssrf_guard.py`)
+2. Domain allowlist (`security/allowlist.py`)
+3. Exa fetch or SQLite cache (`cache/url_cache.py`)
+4. Sanitize + delimit content before returning to the model
 
-The model cannot bypass allowlist by wording alone.
+Untrusted identity URLs (e.g. famous-name GitHub handles) are **not** fetched for scoring — stub metadata only.
+
+## Config
+
+```env
+SCREENING_MODE=agent          # default; pipeline = legacy enrich-all path
+MAX_URLS_PER_RESUME=10        # resume cap + agent session fetch budget
+MAX_AGENT_TURNS=8
+AGENT_RUN_TIMEOUT_SECONDS=120
+```
+
+Rollback: set `SCREENING_MODE=pipeline` in `.env` and restart — no code deploy.
 
 ## vs fully deterministic pipeline
 
 | Approach | Pros | Cons |
 |----------|------|------|
-| **LLM + tools (chosen)** | Matches ADK; fetches only useful URLs; fewer Exa calls | Extra LLM turns; needs tool discipline |
-| **Fixed order (old plan)** | Predictable cost/latency | Not using ADK orchestration; fetches all links |
+| **LLM + tools (default)** | Fewer Exa calls; model skips low-value URLs | Extra LLM turns; needs tool discipline |
+| **Fixed enrich-all (pipeline)** | Predictable single scoring call | Higher Exa cost; fetches every link |
 
-We combine both: **prep is fixed**; **enrichment is LLM-driven via tools**.
+We combine both: **prep is fixed**; **enrichment is LLM-driven by default**, with pipeline as fallback.

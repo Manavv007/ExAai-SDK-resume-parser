@@ -2,7 +2,12 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
+from agent.agent_runner import SCREENING_AGENT_INSTRUCTION
+from agent.config import get_settings
 from agent.pipeline import (
+    SCREENING_AGENT_TOOLS,
     create_screening_agent,
     root_agent,
     score_with_validation,
@@ -11,10 +16,46 @@ from agent.pipeline import (
 FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"
 
 
+def _tool_name(tool: object) -> str:
+    return str(getattr(tool, "name", None) or getattr(tool, "__name__", tool))
+
+
 def test_create_screening_agent_has_tools() -> None:
     agent = create_screening_agent()
     assert agent.name == "resume_screener"
-    assert len(agent.tools) >= 2
+    assert len(agent.tools) >= 3
+    tool_names = {_tool_name(tool) for tool in agent.tools}
+    expected = {fn.__name__ for fn in SCREENING_AGENT_TOOLS}
+    assert tool_names == expected
+    assert "list_candidate_profile_urls" in tool_names
+    assert "fetch_profiles" in tool_names
+    assert "submit_screening_result" in tool_names
+
+
+def test_create_screening_agent_uses_configured_model(test_settings) -> None:
+    agent = create_screening_agent()
+    assert agent.model == test_settings.gemini_model_id
+
+
+def test_create_screening_agent_uses_openrouter_litellm(
+    monkeypatch: pytest.MonkeyPatch,
+    test_settings,
+) -> None:
+    pytest.importorskip("litellm")
+    monkeypatch.setenv("LLM_PROVIDER", "openrouter")
+    monkeypatch.setenv("OPEN_ROUTER_API_KEY", "test-openrouter")
+    monkeypatch.setenv("OPENROUTER_MODEL_ID", "openrouter/free")
+    get_settings.cache_clear()
+
+    agent = create_screening_agent()
+    assert getattr(agent.model, "model", None) == "openrouter/free"
+
+
+def test_create_screening_agent_instruction_covers_trust() -> None:
+    agent = create_screening_agent()
+    assert agent.instruction == SCREENING_AGENT_INSTRUCTION
+    assert "profile_trust_by_url" in agent.instruction
+    assert "scoring_untrusted" in agent.instruction.lower()
 
 
 def test_root_agent_export() -> None:

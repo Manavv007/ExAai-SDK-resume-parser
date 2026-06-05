@@ -26,6 +26,7 @@ class ScreeningSessionState(TypedDict, total=False):
     rubric: list[dict[str, str]]
     rubric_preamble: str
     enriched_contents: list[dict[str, Any]]
+    screening_result: dict[str, Any]
     redaction_count: int
     prep_latency_ms: int
     processing_time_ms: int
@@ -47,6 +48,14 @@ Prep outputs:
 Enrichment outputs:
   enriched_contents[] — {{url, content, domain_category, ok?}}
 
-Scoring / validation:
+Agent path (Phase 3+):
+  Prep state is copied into ADK session.state before Runner starts.
+  Initial user message from build_agent_user_message() carries JD, resume, rubric,
+  and profile_trust_by_url; tools read/write the same session dict.
+  Agent tools: list_candidate_profile_urls, fetch_profiles, submit_screening_result
+  (fetch_profile_content optional for single URL).
+  screening_result — resume-screening-result-v1 after submit_screening_result succeeds.
+
+Pipeline-only scoring / validation:
   correction_prompt, retry_count, processing_time_ms
 """

@@ -29,6 +29,12 @@ _MAX_PROMPT_RUBRIC_ITEMS = 12
 _MAX_SCORING_ATTEMPTS = 3
 
 
+def _model_version_label(settings: Any | None = None) -> str:
+    from agent.llm_client import model_version_label
+
+    return model_version_label(settings or get_settings())
+
+
 @lru_cache
 def _scoring_response_schema() -> dict[str, Any]:
     with _SCORING_SCHEMA_PATH.open(encoding="utf-8") as f:
@@ -97,32 +103,10 @@ def _compact_rubric_for_prompt(rubric: list[dict[str, Any]]) -> list[dict[str, A
 
 
 def _generate_json(prompt: str, *, correction: str | None = None) -> dict[str, Any]:
-    """Call Gemini with JSON response mode."""
-    from google import genai
-    from google.genai import types
+    """Call configured LLM provider with JSON response mode."""
+    from agent.llm_client import generate_json
 
-    settings = get_settings()
-    if not settings.gemini_api_key.strip():
-        raise RuntimeError("GEMINI_API_KEY is not configured")
-
-    client = genai.Client(api_key=settings.gemini_api_key)
-    contents = prompt
-    if correction:
-        contents = f"{prompt}\n\nCORRECTION:\n{correction}"
-
-    response = client.models.generate_content(
-        model=settings.gemini_model_id,
-        contents=contents,
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json",
-            response_json_schema=_scoring_response_schema(),
-            max_output_tokens=8192,
-            temperature=0.1,
-        ),
-    )
-
-    text = response.text or ""
-    return _parse_json_response(text)
+    return generate_json(prompt, correction=correction)
 
 
 def _build_scoring_prompt(
@@ -263,7 +247,7 @@ def normalize_screening_result(
         "metadata": {
             "schema_version": "1.0",
             "model_version": meta_in.get("model_version")
-            or f"exaai-adk/{settings.gemini_model_id}",
+            or _model_version_label(settings),
             "processed_at": meta_in.get("processed_at") or now,
             "processing_time_ms": processing_time_ms or meta_in.get("processing_time_ms"),
             "resume_text_chars": len(resume_text),
@@ -297,7 +281,7 @@ def build_failed_result(
     now = datetime.now(UTC).isoformat().replace("+00:00", "Z")
     metadata: dict[str, Any] = {
         "schema_version": "1.0",
-        "model_version": f"exaai-adk/{settings.gemini_model_id}",
+        "model_version": _model_version_label(settings),
         "processed_at": now,
         "resume_text_chars": len(resume_text),
         "agent_version": settings.agent_version,
