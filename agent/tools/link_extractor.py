@@ -92,17 +92,33 @@ class ExtractedLink:
     platform: str | None = None
 
 
+_NON_CRAWLABLE_PREFIXES = ("mailto:", "tel:", "sms:", "javascript:", "data:")
+_NON_CRAWLABLE_NETLOCS = frozenset({"mailto", "tel", "sms", "javascript", "data"})
+
+
 def normalize_url(url: str) -> str | None:
     """Normalize URL: enforce https, strip tracking params, trim trailing punctuation."""
     cleaned = url.strip().rstrip(".,;)")
     if not cleaned:
         return None
 
-    if not cleaned.lower().startswith(("http://", "https://")):
+    lowered = cleaned.lower()
+    if lowered.startswith(_NON_CRAWLABLE_PREFIXES):
+        return None
+
+    if not lowered.startswith(("http://", "https://")):
         cleaned = f"https://{cleaned}"
 
     parsed = urlparse(cleaned)
     if not parsed.netloc:
+        return None
+
+    netloc = parsed.netloc.lower().replace("www.", "")
+    if netloc in _NON_CRAWLABLE_NETLOCS or netloc.startswith(("mailto", "tel", "sms")):
+        return None
+    if "@" in netloc and not netloc.endswith(
+        tuple(f".{host}" for host in ("github.com", "gitlab.com", "linkedin.com"))
+    ):
         return None
 
     query = parse_qs(parsed.query, keep_blank_values=False)

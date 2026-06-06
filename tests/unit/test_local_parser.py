@@ -26,12 +26,12 @@ def test_parse_jd_local_sample_fixture() -> None:
     jd_text = (FIXTURES / "sample_jd.txt").read_text(encoding="utf-8")
     jd = parse_jd_local(jd_text)
 
-    assert jd.job_title == "Python LLM / RAG Pipeline Engineer"
+    assert jd.job_title == "Software Engineering Intern — AI & Data Pipelines"
     assert jd.domain == "technical"
     assert jd.industry == "EXAai Demo Labs"
     assert any("Python" in item for item in jd.must_have)
-    assert any("FastAPI" in item for item in jd.must_have)
-    assert any("Kubernetes" in item for item in jd.nice_to_have)
+    assert any("Git" in item for item in jd.must_have)
+    assert any("Docker" in item for item in jd.nice_to_have)
     assert len(jd.requirements) >= 5
     assert all(req.requirement_type for req in jd.requirements)
 

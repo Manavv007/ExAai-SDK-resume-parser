@@ -27,6 +27,18 @@ def test_manav_name_matches_manavv007_github() -> None:
     assert li.trust == ProfileTrust.SCORING_TRUSTED
 
 
+def test_mailto_link_does_not_trigger_identity_score_cap() -> None:
+    resume = """
+    Manav Bhavsar
+    manav@gmail.com
+    GitHub: https://github.com/Manavv007
+    Email link: mailto:bhavsarmanav14@gmail.com
+    """
+    links = extract_links(resume, max_urls=10)
+    assessments = assess_profile_links(resume, links)
+    assert should_cap_score_for_identity(assessments) is False
+
+
 def test_someone_elses_github_untrusted() -> None:
     resume = """
     Manav Bhavsar

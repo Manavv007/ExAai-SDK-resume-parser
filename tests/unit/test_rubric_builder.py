@@ -4,6 +4,7 @@ from agent.tools.rubric_builder import (
     MUST_HAVE_SCORE_CAP,
     build_rubric,
     build_rubric_bundle,
+    derive_overall_score_from_matches,
     enforce_must_have_score_cap,
     infer_requirement_type,
 )
@@ -49,6 +50,22 @@ def test_enforce_must_have_score_cap() -> None:
     }
     capped = enforce_must_have_score_cap(85, [low_match], rubric)
     assert capped == MUST_HAVE_SCORE_CAP
+
+
+def test_derive_overall_score_weights_must_have_higher() -> None:
+    rubric = build_rubric(
+        JdStructured(
+            must_have=["Python"],
+            nice_to_have=["Kubernetes"],
+            domain="technical",
+        )
+    )
+    matches = [
+        {"requirement": "Python", "match_score": 100, "evidence": "x"},
+        {"requirement": "Kubernetes", "match_score": 50, "evidence": "x"},
+    ]
+    # (100*2 + 50*1) / 3 = 83
+    assert derive_overall_score_from_matches(matches, rubric) == 83
 
 
 def test_enforce_must_have_no_cap_when_passing() -> None:

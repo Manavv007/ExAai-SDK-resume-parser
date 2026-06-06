@@ -84,6 +84,9 @@ class ScreeningMetadata(BaseModel):
     agent_version: str = Field(min_length=1)
     processing_time_ms: int | None = Field(default=None, ge=0)
     job_desc_version: str | None = None
+    llm_calls: int | None = Field(default=None, ge=0)
+    agent_submit_fallback: bool | None = None
+    screening_mode: Literal["pipeline", "agent"] | None = None
 
 
 class ScreeningError(BaseModel):

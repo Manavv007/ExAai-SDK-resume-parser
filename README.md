@@ -47,7 +47,7 @@ Edit `.env` and set at minimum `GEMINI_API_KEY`, `EXA_API_KEY`, and `API_KEYS`.
 
 **Fewer Gemini calls:** `JD_PARSE_USE_LLM=false` (default) uses local JD/resume parsing; `MAX_AGENT_TURNS=8` caps agent turns.
 
-**OpenRouter (optional):** set `OPEN_ROUTER_API_KEY` and `LLM_PROVIDER=openrouter` (or `auto`). Default `OPENROUTER_MODEL_ID=openrouter/free` auto-picks a free model with tool-calling support; use `openai/gpt-oss-20b:free` for a specific fast model. On 429 rate limits, retries and `OPENROUTER_FALLBACK_MODEL_IDS` apply automatically.
+**OpenRouter (optional):** set `OPEN_ROUTER_API_KEY` and `LLM_PROVIDER=openrouter` (or `auto`). Agent mode (`SCREENING_MODE=agent`) requires tool calling — use `OPENROUTER_AGENT_MODEL_ID=openai/gpt-oss-20b:free` (default). Pipeline scoring can use `OPENROUTER_MODEL_ID=openrouter/free`. Free tier caps agent turns at `OPENROUTER_FREE_MAX_AGENT_TURNS=3`.
 
 ## Run locally
 

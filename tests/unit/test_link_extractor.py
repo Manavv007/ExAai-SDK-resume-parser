@@ -20,6 +20,12 @@ def test_normalize_bare_domain() -> None:
     assert url == "https://github.com/janedoe"
 
 
+def test_normalize_rejects_mailto_and_tel() -> None:
+    assert normalize_url("mailto:candidate@example.com") is None
+    assert normalize_url("tel:+15551234567") is None
+    assert normalize_url("https://mailto:candidate@example.com") is None
+
+
 def test_extract_explicit_urls_from_resume() -> None:
     text = (FIXTURES / "sample_resume.txt").read_text(encoding="utf-8")
     links = extract_links(text, max_urls=10)

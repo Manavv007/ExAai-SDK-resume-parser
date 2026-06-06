@@ -89,5 +89,5 @@ def test_pydantic_rejects_completed_without_score() -> None:
 def test_round_trip_pydantic_model() -> None:
     data = _load("valid_result_completed.json")
     model = ResumeScreeningResult.model_validate(data)
-    roundtrip = model.model_dump(mode="json")
+    roundtrip = model.model_dump(mode="json", exclude_none=True)
     assert validate_result(roundtrip) is True

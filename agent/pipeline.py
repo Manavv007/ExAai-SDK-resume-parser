@@ -11,9 +11,7 @@ from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 
 from agent.adk_tools import (
-    fetch_profile_content,
     fetch_profiles,
-    list_candidate_profile_urls,
     submit_screening_result,
 )
 from agent.agent_runner import SCREENING_AGENT_INSTRUCTION
@@ -26,10 +24,8 @@ from agent.tools.scorer import build_failed_result, score_screening_from_state
 from agent.tools.validator import validate_result_detailed
 
 SCREENING_AGENT_TOOLS = [
-    list_candidate_profile_urls,
     fetch_profiles,
     submit_screening_result,
-    fetch_profile_content,
 ]
 
 
@@ -71,12 +67,16 @@ def _elapsed_ms(start: float) -> int:
     return int((time.monotonic() - start) * 1000)
 
 
-def score_with_validation(state: dict[str, Any]) -> dict[str, Any]:
+def score_with_validation(
+    state: dict[str, Any],
+    *,
+    max_attempts: int = 2,
+) -> dict[str, Any]:
     """
     Score and validate; retry once with correction prompt on schema failure.
     """
     correction: str | None = None
-    for attempt in range(2):
+    for attempt in range(max(1, max_attempts)):
         state["retry_count"] = attempt
         if correction:
             state["correction_prompt"] = correction
@@ -91,7 +91,9 @@ def score_with_validation(state: dict[str, Any]) -> dict[str, Any]:
         correction = (
             "Your JSON failed schema validation: "
             + "; ".join(outcome.errors)
-            + ". Return only valid resume-screening-result-v1 JSON."
+            + ". Return scoring fields only (resume_similarity_score, "
+            "requirement_matches, recommendation, recommendation_reasoning, red_flags). "
+            "Do not include metadata, application_id, job_id, or null fields."
         )
 
     return build_failed_result(
@@ -139,7 +141,9 @@ async def run_screening_async(
     state["retry_count"] = 0
 
     settings = get_settings()
-    if settings.screening_mode == "agent":
+    screening_mode = settings.screening_mode
+    state["screening_mode"] = screening_mode
+    if screening_mode == "agent":
         from agent.agent_runner import run_screening_agent_async
 
         result = await run_screening_agent_async(state)

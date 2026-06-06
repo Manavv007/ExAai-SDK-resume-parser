@@ -10,6 +10,7 @@ import pytest
 
 from agent.pipeline import run_screening_async
 from agent.tools.validator import validate_result
+from tests.integration.conftest import batch_fetch_side_effect
 
 FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"
 
@@ -21,7 +22,10 @@ def _pipeline_screening_mode(pipeline_mode) -> None:
 
 @pytest.mark.asyncio
 @patch("agent.tools.scorer._generate_json")
-@patch("agent.enrichment.fetch_url_text", return_value="Open source Python projects.")
+@patch(
+    "agent.enrichment.fetch_url_text_batch",
+    side_effect=batch_fetch_side_effect("Open source Python projects."),
+)
 async def test_full_pipeline_completed(
     mock_fetch,
     mock_generate,

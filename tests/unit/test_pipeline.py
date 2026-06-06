@@ -23,11 +23,10 @@ def _tool_name(tool: object) -> str:
 def test_create_screening_agent_has_tools() -> None:
     agent = create_screening_agent()
     assert agent.name == "resume_screener"
-    assert len(agent.tools) >= 3
+    assert len(agent.tools) == 2
     tool_names = {_tool_name(tool) for tool in agent.tools}
     expected = {fn.__name__ for fn in SCREENING_AGENT_TOOLS}
     assert tool_names == expected
-    assert "list_candidate_profile_urls" in tool_names
     assert "fetch_profiles" in tool_names
     assert "submit_screening_result" in tool_names
 
@@ -48,7 +47,7 @@ def test_create_screening_agent_uses_openrouter_litellm(
     get_settings.cache_clear()
 
     agent = create_screening_agent()
-    assert getattr(agent.model, "model", None) == "openrouter/free"
+    assert getattr(agent.model, "model", None) == "openrouter/openai/gpt-oss-20b:free"
 
 
 def test_create_screening_agent_instruction_covers_trust() -> None:

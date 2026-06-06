@@ -16,6 +16,7 @@ from tests.integration.conftest import (
     allowlist_ok,
     assert_no_pii_in_payload,
     assert_valid_completed_result,
+    batch_fetch_side_effect,
     domain_paths,
     load_llm_fixture,
 )
@@ -29,7 +30,7 @@ def _pipeline_screening_mode(pipeline_mode) -> None:
 @pytest.mark.parametrize("case", DOMAIN_CASES, ids=[c.key for c in DOMAIN_CASES])
 @pytest.mark.asyncio
 @patch("agent.tools.scorer._generate_json")
-@patch("agent.enrichment.fetch_url_text")
+@patch("agent.enrichment.fetch_url_text_batch")
 async def test_domain_pipeline_completed(
     mock_fetch,
     mock_generate,
@@ -56,7 +57,9 @@ async def test_domain_pipeline_completed(
     assert any(case.crawl_url_substring in u for u in prep["profile_urls"])
 
     mock_generate.return_value = load_llm_fixture(rubric=prep["rubric"])
-    mock_fetch.return_value = f"External profile content for {case.key}."
+    mock_fetch.side_effect = batch_fetch_side_effect(
+        f"External profile content for {case.key}."
+    )
 
     mock_cache = MagicMock()
     mock_cache.get.return_value = None

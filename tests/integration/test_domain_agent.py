@@ -16,6 +16,7 @@ from tests.integration.conftest import (
     allowlist_ok,
     assert_no_pii_in_payload,
     assert_valid_completed_result,
+    batch_fetch_side_effect,
     build_scripted_runner,
     domain_paths,
     load_llm_fixture,
@@ -25,7 +26,7 @@ from tests.integration.conftest import (
 @pytest.mark.parametrize("case", DOMAIN_CASES, ids=[c.key for c in DOMAIN_CASES])
 @pytest.mark.asyncio
 @patch("agent.pipeline.create_runner")
-@patch("agent.enrichment.fetch_url_text")
+@patch("agent.enrichment.fetch_url_text_batch")
 async def test_domain_agent_mode_completed(
     mock_fetch,
     mock_create_runner,
@@ -57,7 +58,9 @@ async def test_domain_agent_mode_completed(
         fetch_urls=[fetch_url],
         submit_payload=submit_payload,
     )
-    mock_fetch.return_value = f"External profile content for {case.key}."
+    mock_fetch.side_effect = batch_fetch_side_effect(
+        f"External profile content for {case.key}."
+    )
 
     mock_cache = MagicMock()
     mock_cache.get.return_value = None
@@ -83,4 +86,5 @@ async def test_domain_agent_mode_completed(
 
     assert_valid_completed_result(result, case)
     assert_no_pii_in_payload(result, case.pii_markers)
-    mock_fetch.assert_called_once_with(fetch_url)
+    mock_fetch.assert_called_once()
+    assert fetch_url in mock_fetch.call_args[0][0]

@@ -17,13 +17,17 @@ from tests.integration.conftest import (
     APP_ID,
     JOB_ID,
     agent_text_response,
+    batch_fetch_side_effect,
     build_scripted_runner,
     load_llm_fixture,
 )
 
 
 @pytest.mark.asyncio
-@patch("agent.enrichment.fetch_url_text", return_value="Open source Python projects.")
+@patch(
+    "agent.enrichment.fetch_url_text_batch",
+    side_effect=batch_fetch_side_effect("Open source Python projects."),
+)
 async def test_agent_screening_mocked_tool_flow(
     mock_fetch,
     test_settings,
@@ -83,7 +87,7 @@ async def test_agent_screening_mocked_tool_flow(
     assert result["application_id"] == APP_ID
     assert result["job_id"] == JOB_ID
     assert mock_fetch.call_count == 1
-    assert mock_fetch.call_args[0][0] == trusted_url
+    assert trusted_url in mock_fetch.call_args[0][0]
 
 
 @pytest.mark.asyncio

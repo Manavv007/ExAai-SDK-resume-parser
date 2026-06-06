@@ -1,33 +1,33 @@
-Python LLM / RAG Pipeline Engineer
+Software Engineering Intern — AI & Data Pipelines
 
 Company: EXAai Demo Labs
 Location: Remote (US/EU time zones)
-Experience: Mid-level (3–5 years Python, or 2+ years with strong RAG portfolio)
+Experience: Intern / new grad (0–1 years; coursework and personal projects welcome)
 
 About the role
-We are hiring an engineer to own our production Retrieval-Augmented Generation (RAG) stack: document ingestion, chunking, embeddings, vector search, LLM orchestration, and evaluation. You will ship reliable Python services that power candidate screening and internal knowledge tools—not one-off notebooks.
+We are looking for a motivated intern to support our AI-powered hiring and knowledge tools team. You will learn how document ingestion, embeddings, vector search, and LLM workflows fit together in production Python services—not just notebooks. Mentorship is provided; curiosity and follow-through matter more than years of experience.
 
 Key responsibilities
-- Design and maintain end-to-end RAG pipelines (ingest, chunk, embed, retrieve, rerank, generate).
-- Build async Python APIs (FastAPI) that expose screening and Q&A workflows to product teams.
-- Integrate Gemini or OpenAI-class models with strict JSON outputs and guardrails.
-- Operate vector stores (Pinecone, pgvector, or similar) and tune recall/latency.
-- Add observability: tracing, retrieval metrics, hallucination checks, and regression evals.
-- Collaborate with security on PII redaction, SSRF-safe crawlers, and prompt-injection defenses.
+- Assist with building and testing RAG pipeline components (ingest, chunk, embed, retrieve).
+- Write and maintain small Python scripts and FastAPI endpoints with mentor feedback.
+- Help integrate LLM APIs (Gemini or similar) with structured JSON outputs for screening workflows.
+- Run experiments on chunking, retrieval quality, and basic evaluation metrics.
+- Document findings, write unit tests, and participate in code reviews.
+- Learn secure handling of PII, allowlisted crawlers, and prompt-injection basics.
 
 Requirements:
-- Must have: 3+ years professional Python development
-- Must have: Production experience building RAG or LLM-backed applications
-- Must have: FastAPI (or Flask) and REST API design
-- Required: LangChain, LlamaIndex, or equivalent orchestration frameworks
-- Required: Embeddings, chunking strategies, and vector database query patterns
-- Required: Prompt engineering and structured JSON outputs from LLMs
-- Required: Git, code review, and unit/integration testing in Python
+- Must have: Currently pursuing or recently completed a degree in CS, engineering, or related field
+- Must have: Solid Python fundamentals (functions, classes, async basics, pip/venv)
+- Must have: Familiarity with REST APIs and HTTP (GET/POST, JSON request/response)
+- Required: At least one completed project using Python (coursework, hackathon, or GitHub)
+- Required: Basic Git workflow (clone, branch, commit, pull request)
+- Required: Comfort reading documentation and debugging with logs or a debugger
+- Required: Clear written communication in English
 
 Nice to have:
-- Preferred: PostgreSQL and pgvector
-- Preferred: Docker and CI/CD (GitHub Actions)
-- Preferred: Evaluation frameworks (RAGAS, custom golden sets, A/B on retrieval)
-- Bonus: Exa or web enrichment for external evidence in pipelines
-- Bonus: Google ADK or agent tool-calling patterns
-- Bonus: Kubernetes and horizontal scaling of inference workers
+- Preferred: Exposure to FastAPI, Flask, or Django
+- Preferred: Introductory ML or NLP coursework (embeddings, transformers at a high level)
+- Preferred: Personal projects with LLMs, LangChain, or similar tutorials
+- Bonus: SQL or PostgreSQL basics
+- Bonus: Docker or GitHub Actions from a class or side project
+- Bonus: Interest in retrieval-augmented generation or agent tool-calling patterns

@@ -16,9 +16,19 @@ from agent.security.profile_identity import (
     format_enriched_content_for_scoring,
     merge_identity_red_flags,
 )
+from agent.tools.result_sanitizer import (
+    coerce_score,
+    compact_metadata,
+    optional_metadata_int,
+    sanitize_red_flags,
+    sanitize_requirement_matches,
+    sanitize_sources_crawled,
+)
 from agent.tools.rubric_builder import (
+    MUST_HAVE_PASS_THRESHOLD,
     RubricCriterion,
     build_rubric,
+    derive_overall_score_from_matches,
     enforce_must_have_score_cap,
 )
 from agent.tools.validator import validate_result_detailed
@@ -29,10 +39,13 @@ _MAX_PROMPT_RUBRIC_ITEMS = 12
 _MAX_SCORING_ATTEMPTS = 3
 
 
-def _model_version_label(settings: Any | None = None) -> str:
+def _model_version_label(settings: Any | None = None, *, for_agent: bool = False) -> str:
     from agent.llm_client import model_version_label
 
-    return model_version_label(settings or get_settings())
+    resolved = settings or get_settings()
+    if not for_agent and resolved.screening_mode == "agent":
+        for_agent = True
+    return model_version_label(resolved, for_agent=for_agent)
 
 
 @lru_cache
@@ -138,10 +151,12 @@ def _build_scoring_prompt(
 Return ONLY valid JSON matching the response schema (no markdown).
 Rules:
 - One requirement_matches entry per rubric criterion below (same order).
-- evidence: max 200 characters, plain text, no newlines.
-- Do not include source_quote.
+- match_score and resume_similarity_score.score must be integers 0-100 (not floats).
+- evidence: max 200 characters, plain text, no newlines; never empty.
+- Do not include metadata, application_id, job_id, sources_crawled, or null fields.
+- Do not include source_quote unless you have a short quote.
 - red_flags: use [] unless there is a clear serious issue.
-- recommendation_reasoning: max 500 characters.
+- recommendation_reasoning: required, max 500 characters, never empty.
 
 RUBRIC ({len(rubric_for_prompt)} criteria):
 {rubric_json}
@@ -171,22 +186,6 @@ def _normalize_recommendation(value: Any) -> str:
     return mapping.get(raw, "hold")
 
 
-def _sources_from_enriched(enriched_contents: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    sources: list[dict[str, Any]] = []
-    for item in enriched_contents:
-        url = item.get("url")
-        if not url:
-            continue
-        sources.append(
-            {
-                "url": url,
-                "relevance": "high" if item.get("ok", True) else "low",
-                "title": item.get("domain_category"),
-            }
-        )
-    return sources
-
-
 def normalize_screening_result(
     raw: dict[str, Any],
     *,
@@ -207,28 +206,77 @@ def normalize_screening_result(
     if not isinstance(similarity, dict):
         similarity = {}
 
-    score = int(similarity.get("score", 0))
-    reasoning = str(similarity.get("reasoning") or "No reasoning provided.")[:500]
+    requirement_matches = sanitize_requirement_matches(
+        raw.get("requirement_matches"),
+        rubric,
+    )
 
-    requirement_matches = raw.get("requirement_matches") or []
-    if not isinstance(requirement_matches, list):
-        requirement_matches = []
+    derived_score = derive_overall_score_from_matches(requirement_matches, rubric)
+    score = coerce_score(similarity.get("score"))
+    if derived_score > 0:
+        score = max(score, derived_score)
 
     score = enforce_must_have_score_cap(score, requirement_matches, rubric)
     if profile_identity_cap_score:
-        score = apply_identity_score_cap(score)
+        capped = apply_identity_score_cap(score)
+        if derived_score >= MUST_HAVE_PASS_THRESHOLD:
+            score = max(derived_score, capped)
+        else:
+            score = capped
+
+    reasoning = str(similarity.get("reasoning") or "").strip()[:500]
+    if not reasoning:
+        reasoning = "No reasoning provided."
 
     recommendation = _normalize_recommendation(raw.get("recommendation"))
     if score >= 75 and recommendation == "hold":
         recommendation = "advance"
-    if score < 40 and recommendation == "advance":
+    if score < 60 and recommendation == "advance":
         recommendation = "hold"
 
-    sources = raw.get("sources_crawled") or _sources_from_enriched(enriched_contents)
-    if not sources:
-        sources = _sources_from_enriched(enriched_contents)
+    sources = sanitize_sources_crawled(
+        raw.get("sources_crawled"),
+        enriched_fallback=enriched_contents,
+    )
 
     meta_in = raw.get("metadata") if isinstance(raw.get("metadata"), dict) else {}
+    model_version = meta_in.get("model_version")
+    if not isinstance(model_version, str) or not model_version.strip():
+        model_version = _model_version_label(settings)
+
+    processed_at = meta_in.get("processed_at")
+    if not isinstance(processed_at, str) or not processed_at.strip():
+        processed_at = now
+
+    job_desc_version = meta_in.get("job_desc_version")
+    if not isinstance(job_desc_version, str) or not job_desc_version.strip():
+        job_desc_version = "1.4"
+
+    metadata: dict[str, Any] = {
+        "schema_version": "1.0",
+        "model_version": model_version.strip(),
+        "processed_at": processed_at.strip(),
+        "resume_text_chars": len(resume_text),
+        "job_desc_version": job_desc_version,
+        "agent_version": settings.agent_version,
+        "screening_mode": settings.screening_mode,
+    }
+    elapsed_ms = optional_metadata_int(processing_time_ms)
+    if elapsed_ms is None:
+        elapsed_ms = optional_metadata_int(meta_in.get("processing_time_ms"))
+    if elapsed_ms is not None:
+        metadata["processing_time_ms"] = elapsed_ms
+
+    llm_calls = optional_metadata_int(meta_in.get("llm_calls"))
+    if llm_calls is not None:
+        metadata["llm_calls"] = llm_calls
+
+    agent_submit_fallback = meta_in.get("agent_submit_fallback")
+    if isinstance(agent_submit_fallback, bool):
+        metadata["agent_submit_fallback"] = agent_submit_fallback
+
+    metadata = compact_metadata(metadata)
+
     result = {
         "application_id": str(raw.get("application_id") or application_id),
         "job_id": str(raw.get("job_id") or job_id),
@@ -236,24 +284,16 @@ def normalize_screening_result(
         "resume_similarity_score": {"score": max(0, min(100, score)), "reasoning": reasoning},
         "requirement_matches": requirement_matches,
         "recommendation": recommendation,
-        "recommendation_reasoning": str(
-            raw.get("recommendation_reasoning") or reasoning
+        "recommendation_reasoning": (
+            str(raw.get("recommendation_reasoning") or "").strip()
+            or reasoning
         )[:2000],
         "red_flags": merge_identity_red_flags(
-            raw.get("red_flags") or [],
+            sanitize_red_flags(raw.get("red_flags")),
             identity_red_flags or [],
         ),
         "sources_crawled": sources,
-        "metadata": {
-            "schema_version": "1.0",
-            "model_version": meta_in.get("model_version")
-            or _model_version_label(settings),
-            "processed_at": meta_in.get("processed_at") or now,
-            "processing_time_ms": processing_time_ms or meta_in.get("processing_time_ms"),
-            "resume_text_chars": len(resume_text),
-            "job_desc_version": meta_in.get("job_desc_version") or "1.4",
-            "agent_version": settings.agent_version,
-        },
+        "metadata": metadata,
         "errors": raw.get("errors") or [],
     }
 
@@ -285,6 +325,7 @@ def build_failed_result(
         "processed_at": now,
         "resume_text_chars": len(resume_text),
         "agent_version": settings.agent_version,
+        "screening_mode": settings.screening_mode,
     }
     if processing_time_ms is not None:
         metadata["processing_time_ms"] = processing_time_ms
@@ -293,7 +334,7 @@ def build_failed_result(
         "application_id": application_id,
         "job_id": job_id,
         "resume_screening_status": "failed",
-        "metadata": metadata,
+        "metadata": compact_metadata(metadata),
         "errors": [{"code": code, "message": message}],
     }
 
@@ -358,13 +399,15 @@ def score_screening(
             last_error = "; ".join(outcome.errors)
             correction_prompt = (
                 f"Your JSON failed schema validation: {last_error}. "
-                "Return only valid resume-screening-result-v1 JSON."
+                "Return scoring fields only (no metadata). Use integer scores 0-100, "
+                "non-empty evidence strings, and recommendation_reasoning."
             )
         except (json.JSONDecodeError, ValueError, TypeError) as exc:
             last_error = str(exc)
             correction_prompt = (
                 f"Invalid JSON: {exc}. Return compact valid JSON only. "
-                "Keep evidence under 200 characters. Use red_flags: []."
+                "Integer scores, non-empty evidence, no metadata/null fields. "
+                "Use red_flags: []."
             )
 
     return build_failed_result(

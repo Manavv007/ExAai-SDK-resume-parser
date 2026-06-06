@@ -16,7 +16,7 @@ def test_screening_instruction_references_trust_tiers() -> None:
     assert "scoring_untrusted" in lowered
     assert "submit_screening_result" in lowered
     assert "fetch_profiles" in lowered
-    assert "skip" in lowered or "do not call list_candidate_profile_urls" in lowered
+    assert "at most 3 llm turns" in lowered
 
 
 def test_build_agent_user_message_includes_screening_context() -> None:
@@ -49,8 +49,7 @@ def test_build_agent_user_message_includes_screening_context() -> None:
     assert "profile_trust_by_url" in message.lower() or "PROFILE_TRUST_BY_URL" in message
     assert "scoring_trusted" in message
     assert "https://github.com/janedoe" in message
-    assert "skip" in message.lower()
-    assert "list_candidate_profile_urls" in message.lower()
+    assert "submit immediately" in message.lower()
     assert "submit_screening_result" in message
     assert "SUBMIT_PAYLOAD_SHAPE" in message
     assert "FINAL STEP" in message

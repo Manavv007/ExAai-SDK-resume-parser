@@ -170,7 +170,10 @@
         "processing_time_ms": { "type": "integer", "minimum": 0 },
         "resume_text_chars": { "type": "integer", "minimum": 0 },
         "job_desc_version": { "type": "string" },
-        "agent_version": { "type": "string", "minLength": 1 }
+        "agent_version": { "type": "string", "minLength": 1 },
+        "llm_calls": { "type": "integer", "minimum": 0 },
+        "agent_submit_fallback": { "type": "boolean" },
+        "screening_mode": { "type": "string", "enum": ["pipeline", "agent"] }
       }
     },
     "screening_error": {

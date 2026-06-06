@@ -199,6 +199,15 @@ def scripted_agent_callback(
     return _callback
 
 
+def batch_fetch_side_effect(content: str) -> Any:
+    """Return a side_effect for ``fetch_url_text_batch`` mocks."""
+
+    def _fetch(urls: list[str]) -> dict[str, str]:
+        return {url: content for url in urls}
+
+    return _fetch
+
+
 def build_scripted_runner(
     *,
     fetch_urls: list[str],

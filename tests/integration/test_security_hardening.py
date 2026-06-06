@@ -19,6 +19,7 @@ from tests.integration.conftest import (
     JOB_ID,
     allowlist_ok,
     assert_no_pii_in_payload,
+    batch_fetch_side_effect,
     build_scripted_runner,
     domain_paths,
     load_llm_fixture,
@@ -156,7 +157,10 @@ def test_crawl_injection_not_in_prompt_or_evidence(mock_generate, test_settings)
 
 @pytest.mark.asyncio
 @patch("agent.tools.scorer._generate_json")
-@patch("agent.enrichment.fetch_url_text", return_value=INJECTION_CRAWL)
+@patch(
+    "agent.enrichment.fetch_url_text_batch",
+    side_effect=batch_fetch_side_effect(INJECTION_CRAWL),
+)
 async def test_pipeline_sanitizes_injection_before_llm(
     mock_fetch,
     mock_generate,
@@ -246,7 +250,10 @@ def test_api_screen_response_contains_no_pii(mock_run, test_settings) -> None:
 
 @pytest.mark.asyncio
 @patch("agent.tools.scorer._generate_json")
-@patch("agent.enrichment.fetch_url_text", return_value="sanitized external evidence.")
+@patch(
+    "agent.enrichment.fetch_url_text_batch",
+    side_effect=batch_fetch_side_effect("sanitized external evidence."),
+)
 async def test_api_screen_end_to_end_prep_redacts_pii(
     mock_fetch,
     mock_generate,
@@ -307,7 +314,10 @@ async def test_api_screen_end_to_end_prep_redacts_pii(
 
 @pytest.mark.asyncio
 @patch("agent.pipeline.create_runner")
-@patch("agent.enrichment.fetch_url_text", return_value=INJECTION_CRAWL)
+@patch(
+    "agent.enrichment.fetch_url_text_batch",
+    side_effect=batch_fetch_side_effect(INJECTION_CRAWL),
+)
 async def test_agent_sanitizes_injection_before_submit(
     mock_fetch,
     mock_create_runner,
@@ -372,7 +382,10 @@ async def test_agent_sanitizes_injection_before_submit(
 
 @pytest.mark.asyncio
 @patch("agent.pipeline.create_runner")
-@patch("agent.enrichment.fetch_url_text", return_value="Linus Torvalds kernel work.")
+@patch(
+    "agent.enrichment.fetch_url_text_batch",
+    side_effect=batch_fetch_side_effect("Linus Torvalds kernel work."),
+)
 async def test_agent_skips_untrusted_profile_fetch(
     mock_fetch,
     mock_create_runner,
@@ -402,9 +415,12 @@ async def test_agent_skips_untrusted_profile_fetch(
     )
     submit_payload = load_llm_fixture(
         requirement="Python",
-        score=90,
+        score=25,
         rubric=prep["rubric"],
     )
+    for match in submit_payload["requirement_matches"]:
+        match["match_score"] = 25
+        match["evidence"] = "Little corroborating Python evidence on resume."
     mock_create_runner.return_value = build_scripted_runner(
         fetch_urls=[untrusted],
         submit_payload=submit_payload,
@@ -433,4 +449,4 @@ async def test_agent_skips_untrusted_profile_fetch(
 
     assert result["resume_screening_status"] == "completed"
     mock_fetch.assert_not_called()
-    assert result["resume_similarity_score"]["score"] <= 45
+    assert result["resume_similarity_score"]["score"] <= 40

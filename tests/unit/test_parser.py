@@ -48,10 +48,10 @@ def test_parse_jd_heuristic_must_and_nice() -> None:
     structured = parse_jd_structured(jd_text, use_llm=False)
 
     assert structured.domain == "technical"
-    assert structured.seniority == "mid"
+    assert structured.seniority == "intern"
     assert structured.industry == "EXAai Demo Labs"
     assert any("Python" in item for item in structured.must_have)
-    assert any("Kubernetes" in item for item in structured.nice_to_have)
+    assert any("Docker" in item for item in structured.nice_to_have)
 
 
 def test_parse_jd_title() -> None:
