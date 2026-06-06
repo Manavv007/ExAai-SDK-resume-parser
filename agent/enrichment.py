@@ -288,7 +288,7 @@ def _fetch_batch_with_cache(
 
     Returns (url_to_raw_text, list_of_urls_that_were_cached).
     """
-    cached_results: dict[str, str] = []
+    cached_urls: list[str] = []
     uncached_urls: list[str] = []
     url_to_raw: dict[str, str] = {}
 
@@ -296,7 +296,7 @@ def _fetch_batch_with_cache(
         cached = cache.get(url)
         if cached is not None:
             url_to_raw[url] = cached
-            cached_results.append(url)
+            cached_urls.append(url)
         else:
             uncached_urls.append(url)
 
@@ -307,12 +307,12 @@ def _fetch_batch_with_cache(
                 url_to_raw[url] = text
                 if text:
                     cache.set(url, text)
-        except Exception as exc:
+        except Exception:
             # If batch fails entirely, mark all uncached as failed
             for url in uncached_urls:
                 url_to_raw[url] = ""
 
-    return url_to_raw, cached_results
+    return url_to_raw, cached_urls
 
 
 def _build_batch_results(

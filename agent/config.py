@@ -25,11 +25,11 @@ class Settings(BaseSettings):
     open_router_api_key: str = ""
     openrouter_model_id: str = Field(
         default="openrouter/free",
-        description="OpenRouter model for pipeline scoring (openrouter/ prefix added automatically)",
+        description="OpenRouter model for pipeline scoring",
     )
     openrouter_agent_model_id: str = Field(
         default="openai/gpt-oss-20b:free",
-        description="OpenRouter model for ADK agent tool calling (required for SCREENING_MODE=agent)",
+        description="OpenRouter model for ADK agent tool calling",
     )
     openrouter_fallback_model_ids: str = Field(
         default="openai/gpt-oss-20b:free",
@@ -44,7 +44,7 @@ class Settings(BaseSettings):
 
     screening_mode: ScreeningMode = Field(
         default="pipeline",
-        description="agent: ADK Runner with tools; pipeline: enrich-all + score (recommended for OpenRouter free)",
+        description="agent: ADK Runner tools; pipeline: enrich-all + score",
     )
 
     @field_validator("screening_mode", mode="before")

@@ -371,7 +371,10 @@ def _is_identity_profile_host(url: str) -> bool:
     if not normalized:
         return False
     host = urlparse(normalized).netloc.lower().replace("www.", "")
-    return any(host == profile_host or host.endswith("." + profile_host) for profile_host in _PROFILE_HOSTS)
+    return any(
+        host == profile_host or host.endswith("." + profile_host)
+        for profile_host in _PROFILE_HOSTS
+    )
 
 
 def should_cap_score_for_identity(assessments: list[ProfileTrustAssessment]) -> bool:

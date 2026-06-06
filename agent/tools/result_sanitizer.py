@@ -58,7 +58,11 @@ def sanitize_requirement_matches(
 
         req_type = str(item.get("requirement_type") or "").strip().lower()
         if req_type not in VALID_REQUIREMENT_TYPES:
-            req_type = _rubric_item_type(rubric[index]) if index < len(rubric) else "technical_skill"
+            req_type = (
+                _rubric_item_type(rubric[index])
+                if index < len(rubric)
+                else "technical_skill"
+            )
 
         evidence = str(item.get("evidence") or "").strip().replace("\n", " ")[:200]
         if not evidence:

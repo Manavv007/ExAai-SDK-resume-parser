@@ -196,6 +196,42 @@ def build_rubric_bundle(jd_structured: JdStructured | dict[str, Any]) -> dict[st
     }
 
 
+def _rubric_item_weight(item: Any) -> CriterionWeight:
+    if isinstance(item, RubricCriterion):
+        return item.weight
+    weight = item.get("weight")
+    return weight if weight in ("must_have", "nice_to_have") else "nice_to_have"
+
+
+def derive_overall_score_from_matches(
+    requirement_matches: list[dict[str, Any]],
+    rubric: list[RubricCriterion] | list[dict[str, Any]],
+) -> int:
+    """Weighted mean of rubric match_score values (must_have counts 2x)."""
+    if not requirement_matches:
+        return 0
+
+    weighted_sum = 0
+    weight_total = 0
+    for index, match in enumerate(requirement_matches):
+        try:
+            score = int(match.get("match_score", 0))
+        except (TypeError, ValueError):
+            score = 0
+        score = max(0, min(100, score))
+        is_must = (
+            index < len(rubric)
+            and _rubric_item_weight(rubric[index]) == "must_have"
+        )
+        weight = 2 if is_must else 1
+        weighted_sum += score * weight
+        weight_total += weight
+
+    if weight_total == 0:
+        return 0
+    return max(0, min(100, int(round(weighted_sum / weight_total))))
+
+
 def enforce_must_have_score_cap(
     overall_score: int,
     requirement_matches: list[dict[str, Any]],

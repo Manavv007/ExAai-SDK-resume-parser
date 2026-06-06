@@ -12,32 +12,35 @@ from google.adk.runners import Runner
 from google.genai import types
 
 from agent.config import get_settings
-from agent.llm_client import classify_llm_error
+from agent.llm_client import (
+    classify_llm_error,
+    effective_max_agent_turns,
+    get_llm_call_count,
+    reset_llm_call_count,
+)
 from agent.tools.scorer import _compact_rubric_for_prompt, build_failed_result
 
 logger = logging.getLogger("exaai_adk.agent_runner")
 
 SCREENING_AGENT_INSTRUCTION = """You are a resume screening agent for hiring teams.
 
+You have at most 3 LLM turns. Minimize API calls:
+- If the redacted resume is enough to score, call submit_screening_result on your FIRST turn.
+- Only call fetch_profiles when external evidence is essential (one batch call max).
+- Never end on plain text — your LAST action MUST be submit_screening_result.
+
 Workflow:
-1. Read the screening brief below (redacted resume, job description, rubric, profile URLs,
-   and profile_trust_by_url). Do not call list_candidate_profile_urls unless you need
-   profile_url_meta source/platform details — that data is already in the brief.
-2. If external profiles would materially help assess JD fit, call fetch_profiles(urls) in
-   one batch when possible. Prefer GitHub, portfolio sites, and Kaggle. Stop when resume
-   plus fetched evidence is enough; skip fetch entirely when the resume is sufficient.
-   Do NOT fetch scoring_untrusted URLs. You may call fetch_profiles again until the session
-   fetch budget (max_urls_per_resume) is reached. fetch_profile_content(url) is for a
-   single URL only when batch fetch is unsuitable.
-3. Base requirement evidence on the redacted resume first. Use fetched external content
-   only for scoring_trusted profiles, or scoring_limited when the resume corroborates
-   the same skills or projects. scoring_untrusted profiles must not increase scores.
-4. Your LAST action MUST be submit_screening_result — never end with plain text only.
-   Call it exactly once with valid JSON: resume_similarity_score, requirement_matches
-   (one per rubric criterion, same order), recommendation, recommendation_reasoning,
-   red_flags. Do not include application_id, job_id, metadata, or sources_crawled.
+1. Read the screening brief (resume, JD, rubric, PROFILE_URLS, profile_trust_by_url).
+   URLs and trust tiers are already in the brief — do not list or discover them again.
+2. Optional: fetch_profiles(urls) in one batch for scoring_trusted GitHub/portfolio/Kaggle
+   URLs only. Skip fetch when the resume is sufficient. Do NOT fetch scoring_untrusted URLs.
+3. Base requirement evidence on the redacted resume first. Use fetched content only for
+   scoring_trusted profiles, or scoring_limited when the resume corroborates the same skills.
+4. Call submit_screening_result exactly once with: resume_similarity_score, requirement_matches
+   (one per rubric criterion, same order), recommendation, recommendation_reasoning, red_flags.
+   Do not include application_id, job_id, metadata, or sources_crawled.
    If validation errors are returned, fix the payload and call submit again immediately.
-   If fetch fails or turns are limited, submit from the resume alone — do not skip submit.
+   If fetch fails, submit from the resume alone — do not skip submit.
 
 Trust tiers (profile_trust_by_url):
 - scoring_trusted: full external content may support criteria when relevant.
@@ -140,9 +143,9 @@ JOB DESCRIPTION:
 REDACTED RESUME:
 {resume_text[:8000]}
 
-URLs and trust tiers are in PROFILE_URLS and PROFILE_TRUST_BY_URL above. Skip
-list_candidate_profile_urls unless you need profile_url_meta. Prefer at most one
-fetch_profiles call, then submit. If the resume is sufficient, submit immediately.
+URLs and trust tiers are in PROFILE_URLS and PROFILE_TRUST_BY_URL above.
+If the resume is sufficient, submit immediately on turn 1 (no fetch_profiles).
+Otherwise one fetch_profiles batch, then submit.
 
 SUBMIT_PAYLOAD_SHAPE (fill with real scores/evidence; call submit_screening_result):
 {_build_submit_skeleton(rubric_compact)}
@@ -216,6 +219,8 @@ async def run_screening_agent_async(
     URLs — the agent chooses fetches via tools.
     """
     settings = get_settings()
+    reset_llm_call_count()
+    max_turns = effective_max_agent_turns(settings)
     if runner is None:
         from agent.pipeline import create_runner
 
@@ -237,7 +242,7 @@ async def run_screening_agent_async(
         role="user",
         parts=[types.Part(text=build_agent_user_message(state))],
     )
-    run_config = RunConfig(max_llm_calls=settings.max_agent_turns)
+    run_config = RunConfig(max_llm_calls=max_turns)
 
     try:
         await _consume_agent_run(
@@ -302,11 +307,14 @@ async def run_screening_agent_async(
         merged_state.update(session_state)
         if processing_time_ms is not None:
             merged_state["processing_time_ms"] = processing_time_ms
-        fallback = score_with_validation(merged_state)
+        fallback = score_with_validation(merged_state, max_attempts=1)
         if fallback.get("resume_screening_status") == "completed":
             metadata = fallback.get("metadata")
             if isinstance(metadata, dict):
                 metadata["agent_submit_fallback"] = True
+                total_calls = get_llm_call_count()
+                if total_calls:
+                    metadata["llm_calls"] = total_calls
             return fallback
 
         return build_failed_result(
@@ -315,15 +323,21 @@ async def run_screening_agent_async(
             code="LLM_ERROR",
             message=(
                 "Agent completed without calling submit_screening_result. "
-                f"Pipeline fallback also failed (max_agent_turns={settings.max_agent_turns}). "
-                "Retry or increase MAX_AGENT_TURNS in .env."
+                f"Pipeline fallback also failed after {get_llm_call_count()} agent LLM call(s) "
+                f"(cap {max_turns}). Try SCREENING_MODE=pipeline for a single scoring call."
             ),
             resume_text=resume_text,
             processing_time_ms=processing_time_ms,
         )
 
     metadata = screening_result.get("metadata")
-    if isinstance(metadata, dict) and processing_time_ms is not None:
-        metadata["processing_time_ms"] = processing_time_ms
+    if isinstance(metadata, dict):
+        from agent.tools.result_sanitizer import optional_metadata_int
+
+        call_count = optional_metadata_int(get_llm_call_count())
+        if call_count is not None:
+            metadata["llm_calls"] = call_count
+        if processing_time_ms is not None:
+            metadata["processing_time_ms"] = processing_time_ms
 
     return screening_result
