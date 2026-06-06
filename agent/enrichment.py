@@ -1,4 +1,8 @@
-"""Profile URL enrichment (Exa + security checks + cache)."""
+"""Profile URL enrichment (Exa + security checks + cache).
+
+Batch-aware: all uncached URLs are fetched in a single Exa API call
+instead of N separate round-trips.
+"""
 
 from __future__ import annotations
 
@@ -10,7 +14,7 @@ from agent.config import get_settings
 from agent.security.allowlist import check_allowlist
 from agent.security.profile_identity import ProfileTrust
 from agent.security.ssrf_guard import validate_url
-from agent.tools.crawler import fetch_url_text
+from agent.tools.crawler import fetch_url_text, fetch_url_text_batch
 from agent.tools.sanitizer import sanitize_external_content
 
 _cache: UrlCache | None = None
@@ -34,6 +38,26 @@ def _content_preview(content: str, *, limit: int = 500) -> str:
     if len(content) <= limit:
         return content
     return content[:limit] + "…"
+
+
+def _build_enriched_entry(
+    *,
+    url: str,
+    raw: str,
+    trust_by_url: dict[str, str],
+    allow_result: Any,
+    settings: Any,
+) -> dict[str, Any]:
+    """Sanitize raw content and build an enriched_contents entry."""
+    sanitized = sanitize_external_content(raw, url, max_chars=settings.content_token_cap)
+    profile_trust = trust_by_url.get(url, ProfileTrust.SCORING_LIMITED.value)
+    return {
+        "url": url,
+        "content": sanitized,
+        "domain_category": allow_result.domain_category,
+        "profile_trust": profile_trust,
+        "ok": True,
+    }
 
 
 def fetch_profile_url_data(
@@ -87,22 +111,20 @@ def fetch_profile_url_data(
                 "message": str(exc),
             }
 
-    sanitized = sanitize_external_content(raw, url, max_chars=settings.content_token_cap)
-    profile_trust = trust_by_url.get(url, ProfileTrust.SCORING_LIMITED.value)
-    entry = {
-        "url": url,
-        "content": sanitized,
-        "domain_category": allow.domain_category,
-        "profile_trust": profile_trust,
-        "ok": True,
-    }
+    entry = _build_enriched_entry(
+        url=url,
+        raw=raw,
+        trust_by_url=trust_by_url,
+        allow_result=allow,
+        settings=settings,
+    )
     return {
         "ok": True,
         "url": url,
         "domain_category": allow.domain_category,
-        "profile_trust": profile_trust,
+        "profile_trust": entry["profile_trust"],
         "entry": entry,
-        "content_preview": _content_preview(sanitized),
+        "content_preview": _content_preview(entry["content"]),
     }
 
 
@@ -224,11 +246,122 @@ def plan_batch_profile_fetches(
     return eligible, skipped, truncated
 
 
+# ---------------------------------------------------------------------------
+# Batch fetch helpers
+# ---------------------------------------------------------------------------
+
+def _classify_and_check_url(
+    url: str,
+    *,
+    allowed_urls: set[str],
+    trust_by_url: dict[str, str],
+    skip_untrusted: bool,
+) -> dict[str, Any]:
+    """Run SSRF + allowlist checks for a single URL. Returns a status dict."""
+    if url not in allowed_urls:
+        return {"ok": False, "url": url, "error": "url_not_in_candidate_list"}
+
+    if skip_untrusted and trust_by_url.get(url) == ProfileTrust.SCORING_UNTRUSTED.value:
+        return {
+            "ok": False,
+            "url": url,
+            "error": "profile_untrusted",
+            "message": "URL marked scoring_untrusted; do not fetch for scoring.",
+        }
+
+    ssrf = validate_url(url)
+    if not ssrf.allowed:
+        return {"ok": False, "url": url, "error": ssrf.reason}
+
+    allow = check_allowlist(url)
+    if not allow.allowed:
+        return {"ok": False, "url": url, "error": allow.reason}
+
+    return {"ok": True, "url": url, "allow": allow}
+
+
+def _fetch_batch_with_cache(
+    urls: list[str],
+    cache: UrlCache,
+) -> tuple[dict[str, str], list[str]]:
+    """Separate cached vs uncached URLs; batch-fetch only the uncached ones.
+
+    Returns (url_to_raw_text, list_of_urls_that_were_cached).
+    """
+    cached_results: dict[str, str] = []
+    uncached_urls: list[str] = []
+    url_to_raw: dict[str, str] = {}
+
+    for url in urls:
+        cached = cache.get(url)
+        if cached is not None:
+            url_to_raw[url] = cached
+            cached_results.append(url)
+        else:
+            uncached_urls.append(url)
+
+    if uncached_urls:
+        try:
+            fetched = fetch_url_text_batch(uncached_urls)
+            for url, text in fetched.items():
+                url_to_raw[url] = text
+                if text:
+                    cache.set(url, text)
+        except Exception as exc:
+            # If batch fails entirely, mark all uncached as failed
+            for url in uncached_urls:
+                url_to_raw[url] = ""
+
+    return url_to_raw, cached_results
+
+
+def _build_batch_results(
+    eligible_urls: list[str],
+    url_to_raw: dict[str, str],
+    trust_by_url: dict[str, str],
+    settings: Any,
+) -> list[dict[str, Any]]:
+    """Build result dicts for each URL from raw fetched text."""
+    results: list[dict[str, Any]] = []
+    for url in eligible_urls:
+        raw = url_to_raw.get(url, "")
+        if not raw:
+            results.append({
+                "ok": False,
+                "url": url,
+                "error": "exa_fetch_failed",
+                "message": "Empty response from Exa.",
+            })
+            continue
+
+        allow = check_allowlist(url)
+        entry = _build_enriched_entry(
+            url=url,
+            raw=raw,
+            trust_by_url=trust_by_url,
+            allow_result=allow,
+            settings=settings,
+        )
+        results.append({
+            "ok": True,
+            "url": url,
+            "domain_category": allow.domain_category,
+            "profile_trust": entry["profile_trust"],
+            "content_preview": _content_preview(entry["content"]),
+            "entry": entry,
+        })
+    return results
+
+
 async def fetch_profile_urls_batch_async(
     state: dict[str, Any],
     urls: list[str],
 ) -> dict[str, Any]:
-    """Fetch multiple profile URLs in parallel (bounded concurrency)."""
+    """Fetch multiple profile URLs in a single batch Exa API call.
+
+    Security checks (SSRF, allowlist) still run per-URL before the batch
+    fetch. Cached URLs are served from SQLite without any API call.
+    """
     eligible, skipped, truncated = plan_batch_profile_fetches(
         state,
         urls,
@@ -244,32 +377,24 @@ async def fetch_profile_urls_batch_async(
             "message": "No eligible URLs to fetch.",
         }
 
-    semaphore = asyncio.Semaphore(6)
+    settings = get_settings()
+    trust_by_url = state.get("profile_trust_by_url") or {}
+    cache = get_url_cache()
 
-    async def _one(url: str) -> dict[str, Any]:
-        async with semaphore:
-            return await asyncio.to_thread(fetch_profile_url_data, state, url)
+    # Run the batch fetch in a thread to avoid blocking the event loop
+    url_to_raw, _cached_urls = await asyncio.to_thread(
+        _fetch_batch_with_cache, eligible, cache
+    )
 
-    raw_results = await asyncio.gather(*[_one(url) for url in eligible])
+    results = _build_batch_results(eligible, url_to_raw, trust_by_url, settings)
+
+    # Merge successful entries into state
     enriched: list[dict[str, Any]] = list(state.get("enriched_contents") or [])
-    results: list[dict[str, Any]] = []
-
-    for item in raw_results:
-        if item.get("ok"):
+    for item in results:
+        if item.get("ok") and "entry" in item:
             enriched.append(item["entry"])
-            results.append(
-                {
-                    "ok": True,
-                    "url": item["url"],
-                    "domain_category": item.get("domain_category"),
-                    "profile_trust": item.get("profile_trust"),
-                    "content_preview": item.get("content_preview"),
-                }
-            )
-        else:
-            results.append(item)
-
     state["enriched_contents"] = enriched
+
     fetched = sum(1 for item in results if item.get("ok"))
 
     return {
@@ -277,7 +402,10 @@ async def fetch_profile_urls_batch_async(
         "fetched": fetched,
         "skipped": skipped,
         "truncated": truncated,
-        "results": results,
+        "results": [
+            {k: v for k, v in item.items() if k != "entry"}
+            for item in results
+        ],
         "message": (
             f"Fetched {fetched} profile(s). "
             "Full sanitized content stored in session for scoring."
@@ -291,14 +419,19 @@ def fetch_profile_urls_batch(state: dict[str, Any], urls: list[str]) -> dict[str
 
 
 async def enrich_profile_urls_async(state: dict[str, Any]) -> list[dict[str, Any]]:
-    """Fetch trusted/limited profile URLs concurrently; stub untrusted without Exa."""
+    """Fetch trusted/limited profile URLs in one batch; stub untrusted without Exa.
+
+    All uncached URLs are fetched in a single Exa API call instead of N
+    separate round-trips.
+    """
     settings = get_settings()
     urls = list(state.get("profile_urls") or [])[: settings.max_urls_per_resume]
     trust_by_url = state.get("profile_trust_by_url") or {}
     enriched: list[dict[str, Any]] = list(state.get("enriched_contents") or [])
-    to_fetch: list[str] = []
     results: list[dict[str, Any]] = []
 
+    # Separate untrusted (stub) from fetchable URLs
+    to_fetch: list[str] = []
     for url in urls:
         if trust_by_url.get(url) == ProfileTrust.SCORING_UNTRUSTED.value:
             entry = _stub_untrusted_profile_entry(url)
@@ -316,17 +449,28 @@ async def enrich_profile_urls_async(state: dict[str, Any]) -> list[dict[str, Any
             to_fetch.append(url)
 
     state["enriched_contents"] = enriched
+
     if not to_fetch:
         return results
 
-    semaphore = asyncio.Semaphore(6)
+    # Batch-fetch all URLs in one API call (cached URLs are free)
+    cache = get_url_cache()
+    url_to_raw, _cached_urls = await asyncio.to_thread(
+        _fetch_batch_with_cache, to_fetch, cache
+    )
 
-    async def _one(url: str) -> dict[str, Any]:
-        async with semaphore:
-            return await asyncio.to_thread(fetch_profile_url, state, url)
+    batch_results = _build_batch_results(
+        to_fetch, url_to_raw, trust_by_url, settings
+    )
 
-    fetched = await asyncio.gather(*[_one(url) for url in to_fetch])
-    results.extend(fetched)
+    for item in batch_results:
+        if item.get("ok") and "entry" in item:
+            enriched.append(item["entry"])
+    state["enriched_contents"] = enriched
+    results.extend(
+        {k: v for k, v in item.items() if k != "entry"}
+        for item in batch_results
+    )
     return results
 
 

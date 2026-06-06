@@ -60,8 +60,11 @@ IDENTITY_SCORING_RULES = (
     "SCORING_LIMITED blocks may support a criterion only when the resume also states "
     "the same skill or project. "
     "SCORING_UNTRUSTED / omitted profiles must not increase match_score or overall score. "
-    "If the candidate listed profiles that do not match resume identity, add a red_flag "
-    "profile_identity_mismatch (high severity) with brief evidence."
+    "PROFILE OMITTED means the system could not automatically corroborate that URL with "
+    "the resume name/handles — it is NOT a claim the link is fake or belongs to someone else. "
+    "Only add profile_identity_mismatch when a GitHub/LinkedIn-class profile host is "
+    "SCORING_UNTRUSTED. Do not flag email, phone, or demo-space URLs. "
+    "Do not claim 'all URLs' are mismatched when some blocks are SCORING_TRUSTED."
 )
 
 
@@ -112,10 +115,9 @@ def _tokenize_text(text: str) -> list[str]:
 def _name_tokens_from_resume(text: str) -> list[str]:
     tokens: list[str] = []
     try:
-        from agent.security.pii_redactor import _get_analyzer
+        from agent.security.pii_redactor import _cached_analyze
 
-        analyzer = _get_analyzer()
-        for result in analyzer.analyze(text=text, entities=["PERSON"], language="en"):
+        for result in _cached_analyze(text, entities=["PERSON"], language="en"):
             snippet = text[result.start : result.end]
             for token in _tokenize_text(snippet):
                 if token not in tokens:
@@ -352,15 +354,32 @@ def build_identity_red_flags(
             {
                 "flag": "profile_identity_mismatch",
                 "severity": "high",
-                "evidence": evidence,
+                "evidence": (
+                    "Automated check could not corroborate this profile URL with the "
+                    f"resume identity (not a fraud determination): {evidence}"
+                )[:500],
             }
         )
     return flags
 
 
+def _is_identity_profile_host(url: str) -> bool:
+    """True for hosts where slug/resume mismatch implies untrusted external evidence."""
+    from agent.tools.link_extractor import normalize_url
+
+    normalized = normalize_url(url)
+    if not normalized:
+        return False
+    host = urlparse(normalized).netloc.lower().replace("www.", "")
+    return any(host == profile_host or host.endswith("." + profile_host) for profile_host in _PROFILE_HOSTS)
+
+
 def should_cap_score_for_identity(assessments: list[ProfileTrustAssessment]) -> bool:
-    """Cap overall score when any listed profile is untrusted for scoring."""
-    return any(a.trust == ProfileTrust.SCORING_UNTRUSTED for a in assessments)
+    """Cap overall score when a resume-listed profile host is untrusted for scoring."""
+    return any(
+        a.trust == ProfileTrust.SCORING_UNTRUSTED and _is_identity_profile_host(a.url)
+        for a in assessments
+    )
 
 
 def apply_identity_score_cap(score: int) -> int:

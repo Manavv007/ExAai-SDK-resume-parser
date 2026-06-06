@@ -1,9 +1,8 @@
 """Application settings loaded from environment."""
 
-from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ScreeningMode = Literal["pipeline", "agent"]
@@ -26,27 +25,34 @@ class Settings(BaseSettings):
     open_router_api_key: str = ""
     openrouter_model_id: str = Field(
         default="openrouter/free",
-        description="OpenRouter model id (openrouter/ prefix added automatically)",
+        description="OpenRouter model for pipeline scoring (openrouter/ prefix added automatically)",
+    )
+    openrouter_agent_model_id: str = Field(
+        default="openai/gpt-oss-20b:free",
+        description="OpenRouter model for ADK agent tool calling (required for SCREENING_MODE=agent)",
     )
     openrouter_fallback_model_ids: str = Field(
         default="openai/gpt-oss-20b:free",
         description="Comma-separated fallback OpenRouter models after 429 on primary",
     )
-    llm_max_retries: int = Field(
+    openrouter_free_max_agent_turns: int = Field(
         default=3,
-        description="Retries per model on OpenRouter 429 rate limits",
-    )
-    llm_retry_backoff_seconds: float = Field(
-        default=2.0,
-        description="Base backoff seconds between OpenRouter rate-limit retries",
+        description="Max ADK LLM turns when using OpenRouter free models (each turn = 1 API call)",
     )
     exa_api_key: str = ""
     api_keys: str = Field(default="", description="Comma-separated Bearer tokens")
 
     screening_mode: ScreeningMode = Field(
-        default="agent",
-        description="agent: ADK Runner with tools; pipeline: enrich-all + score fallback",
+        default="pipeline",
+        description="agent: ADK Runner with tools; pipeline: enrich-all + score (recommended for OpenRouter free)",
     )
+
+    @field_validator("screening_mode", mode="before")
+    @classmethod
+    def _strip_screening_mode(cls, value: object) -> object:
+        if isinstance(value, str):
+            return value.strip().lower()
+        return value
 
     jd_parse_use_llm: bool = Field(
         default=False,
@@ -62,6 +68,10 @@ class Settings(BaseSettings):
     max_urls_per_resume: int = Field(
         default=10,
         description="Max profile URLs per resume and max unique agent fetches per session",
+    )
+    url_fetch_concurrency: int = Field(
+        default=12,
+        description="Max concurrent outbound URL fetches (semaphore) for enrichment",
     )
     url_fetch_timeout_seconds: int = 5
     content_token_cap: int = 8000
@@ -86,10 +96,17 @@ class Settings(BaseSettings):
         return {k.strip() for k in self.api_keys.split(",") if k.strip()}
 
 
-@lru_cache
 def get_settings() -> Settings:
+    """Load settings from environment on each call (.env edits apply without cache)."""
     from agent.llm_client import sync_llm_env
 
     settings = Settings()
     sync_llm_env(settings)
     return settings
+
+
+def clear_settings_cache() -> None:
+    """Backward-compatible no-op (settings are not cached)."""
+
+
+get_settings.cache_clear = clear_settings_cache  # type: ignore[attr-defined]

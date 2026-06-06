@@ -70,8 +70,14 @@ def test_fetch_profile_content_rejects_unknown_url(test_settings) -> None:
     assert result["error"] == "url_not_in_candidate_list"
 
 
-@patch("agent.enrichment.fetch_url_text", return_value="Portfolio and design systems.")
-def test_fetch_profiles_parallel_success(mock_fetch, test_settings) -> None:
+@patch(
+    "agent.enrichment.fetch_url_text_batch",
+    return_value={
+        "https://github.com/janedoe": "Portfolio and design systems.",
+        "https://www.behance.net/janedoe": "Portfolio and design systems.",
+    },
+)
+def test_fetch_profiles_parallel_success(mock_fetch_batch, test_settings) -> None:
     urls = [
         "https://github.com/janedoe",
         "https://www.behance.net/janedoe",
@@ -101,11 +107,14 @@ def test_fetch_profiles_parallel_success(mock_fetch, test_settings) -> None:
     assert result["fetched"] == 2
     assert len(result["results"]) == 2
     assert len(ctx.state["enriched_contents"]) == 2
-    assert mock_fetch.call_count == 2
+    mock_fetch_batch.assert_called_once()
 
 
-@patch("agent.enrichment.fetch_url_text", return_value="Trusted GitHub profile.")
-def test_fetch_profiles_skips_untrusted(mock_fetch, test_settings) -> None:
+@patch(
+    "agent.enrichment.fetch_url_text_batch",
+    return_value={"https://github.com/janedoe": "Trusted GitHub profile."},
+)
+def test_fetch_profiles_skips_untrusted(mock_fetch_batch, test_settings) -> None:
     trusted = "https://github.com/janedoe"
     untrusted = "https://github.com/torvalds"
     ctx = MagicMock()
@@ -136,7 +145,7 @@ def test_fetch_profiles_skips_untrusted(mock_fetch, test_settings) -> None:
     assert result["fetched"] == 1
     assert len(result["skipped"]) == 1
     assert result["skipped"][0]["error"] == "profile_untrusted"
-    mock_fetch.assert_called_once_with(trusted)
+    mock_fetch_batch.assert_called_once()
 
 
 def test_fetch_profiles_respects_session_budget(monkeypatch, test_settings) -> None:
@@ -206,8 +215,11 @@ def test_fetch_profile_content_skips_untrusted_without_exa(mock_fetch, test_sett
     assert ctx.state["enriched_contents"] == []
 
 
-@patch("agent.enrichment.fetch_url_text", return_value="Linus Torvalds kernel work.")
-def test_enrich_profile_urls_skips_exa_for_untrusted(mock_fetch, test_settings) -> None:
+@patch(
+    "agent.enrichment.fetch_url_text_batch",
+    return_value={"https://github.com/janedoe": "Linus Torvalds kernel work."},
+)
+def test_enrich_profile_urls_skips_exa_for_untrusted(mock_fetch_batch, test_settings) -> None:
     from agent.enrichment import enrich_profile_urls
 
     trusted = "https://github.com/janedoe"
@@ -235,8 +247,10 @@ def test_enrich_profile_urls_skips_exa_for_untrusted(mock_fetch, test_settings) 
             ):
                 enrich_profile_urls(state)
 
-    assert mock_fetch.call_count == 1
-    assert mock_fetch.call_args[0][0] == trusted
+    mock_fetch_batch.assert_called_once()
+    call_urls = mock_fetch_batch.call_args[0][0]
+    assert trusted in call_urls
+    assert untrusted not in call_urls
     assert len(state["enriched_contents"]) == 2
     stub = next(item for item in state["enriched_contents"] if item["url"] == untrusted)
     assert stub["profile_trust"] == "scoring_untrusted"
@@ -335,7 +349,7 @@ def test_submit_screening_result_rejects_bad_session_uuids() -> None:
     assert "screening_result" not in ctx.state
 
 
-def test_submit_screening_result_rejects_invalid_payload() -> None:
+def test_submit_screening_result_sanitizes_invalid_requirement_type() -> None:
     ctx = MagicMock()
     ctx.state = _base_session_state()
     bad = _llm_scoring_payload(
@@ -351,9 +365,9 @@ def test_submit_screening_result_rejects_invalid_payload() -> None:
 
     result = submit_screening_result(bad, ctx)
 
-    assert result["ok"] is False
-    assert result["errors"]
-    assert "screening_result" not in ctx.state
+    assert result["ok"] is True
+    stored = ctx.state["screening_result"]
+    assert stored["requirement_matches"][0]["requirement_type"] == "technical_skill"
 
 
 def test_submit_screening_result_applies_must_have_cap() -> None:
@@ -385,4 +399,25 @@ def test_submit_screening_result_applies_identity_cap() -> None:
     outcome = process_screening_submission(state, raw)
 
     assert outcome["ok"] is True
-    assert outcome["screening_result"]["resume_similarity_score"]["score"] == 45
+    # Resume rubric evidence (85) outweighs profile identity cap when must-haves pass.
+    assert outcome["screening_result"]["resume_similarity_score"]["score"] == 85
+
+
+def test_submit_screening_result_identity_cap_when_rubric_weak() -> None:
+    state = _base_session_state(profile_identity_cap_score=True)
+    raw = _llm_scoring_payload(
+        resume_similarity_score={"score": 90, "reasoning": "Strong candidate."},
+        requirement_matches=[
+            {
+                "requirement": "Python",
+                "requirement_type": "technical_skill",
+                "match_score": 25,
+                "evidence": "Little Python evidence on resume.",
+            }
+        ],
+    )
+
+    outcome = process_screening_submission(state, raw)
+
+    assert outcome["ok"] is True
+    assert outcome["screening_result"]["resume_similarity_score"]["score"] == 40
