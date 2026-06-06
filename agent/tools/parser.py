@@ -338,9 +338,9 @@ def _parse_jd_heuristic(jd_text: str) -> JdStructured:
     return parse_jd_local(jd_text)
 
 
-def parse_resume_structured(text: str) -> "ResumeStructured":
+def parse_resume_structured(text: str) -> ResumeStructured:
     """Extract resume highlights locally (no LLM)."""
-    from agent.tools.local_parser import ResumeStructured, parse_resume_local
+    from agent.tools.local_parser import parse_resume_local
 
     return parse_resume_local(text)
 
