@@ -9,7 +9,7 @@ from agent.config import get_settings
 from agent.pipeline import (
     SCREENING_AGENT_TOOLS,
     create_screening_agent,
-    root_agent,
+    get_root_agent,
     score_with_validation,
 )
 
@@ -20,7 +20,7 @@ def _tool_name(tool: object) -> str:
     return str(getattr(tool, "name", None) or getattr(tool, "__name__", tool))
 
 
-def test_create_screening_agent_has_tools() -> None:
+def test_create_screening_agent_has_tools(test_settings) -> None:
     agent = create_screening_agent()
     assert agent.name == "resume_screener"
     assert len(agent.tools) == 2
@@ -50,7 +50,7 @@ def test_create_screening_agent_uses_openrouter_litellm(
     assert getattr(agent.model, "model", None) == "openrouter/openai/gpt-oss-20b:free"
 
 
-def test_create_screening_agent_instruction_covers_trust() -> None:
+def test_create_screening_agent_instruction_covers_trust(test_settings) -> None:
     agent = create_screening_agent()
     assert agent.instruction == SCREENING_AGENT_INSTRUCTION
     assert "profile_trust_by_url" in agent.instruction
@@ -58,7 +58,7 @@ def test_create_screening_agent_instruction_covers_trust() -> None:
 
 
 def test_root_agent_export(test_settings) -> None:
-    assert root_agent.name == "resume_screener"
+    assert get_root_agent().name == "resume_screener"
 
 
 @patch("agent.pipeline.score_screening_from_state")

@@ -71,12 +71,6 @@ def get_root_agent() -> Agent:
     return _root_agent
 
 
-def __getattr__(name: str) -> Any:
-    if name == "root_agent":
-        return get_root_agent()
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-
-
 def _elapsed_ms(start: float) -> int:
     return int((time.monotonic() - start) * 1000)
 
