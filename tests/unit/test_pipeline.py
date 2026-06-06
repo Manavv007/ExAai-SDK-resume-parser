@@ -57,7 +57,7 @@ def test_create_screening_agent_instruction_covers_trust() -> None:
     assert "scoring_untrusted" in agent.instruction.lower()
 
 
-def test_root_agent_export() -> None:
+def test_root_agent_export(test_settings) -> None:
     assert root_agent.name == "resume_screener"
 
 

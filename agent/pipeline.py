@@ -60,7 +60,21 @@ def create_runner(
     )
 
 
-root_agent = create_screening_agent()
+_root_agent: Agent | None = None
+
+
+def get_root_agent() -> Agent:
+    """Lazy singleton for ADK CLI/docs; avoids API key lookup at import time."""
+    global _root_agent
+    if _root_agent is None:
+        _root_agent = create_screening_agent()
+    return _root_agent
+
+
+def __getattr__(name: str) -> Any:
+    if name == "root_agent":
+        return get_root_agent()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def _elapsed_ms(start: float) -> int:
