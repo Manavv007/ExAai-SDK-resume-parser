@@ -7,18 +7,11 @@ work runs concurrently without blocking the caller.
 
 from __future__ import annotations
 
-import time
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from typing import Any
-
-_GITHUB_THREADS: dict[str, tuple[threading.Thread, list[Exception]]] = {}
-
-
-def retrieve_github_thread(application_id: str) -> tuple[threading.Thread | None, list[Exception]]:
-    """Retrieve and pop the GitHub background thread and errors for an application."""
-    return _GITHUB_THREADS.pop(application_id, (None, []))
 
 from agent.security.pii_redactor import redact_text
 from agent.security.profile_identity import (
@@ -32,6 +25,13 @@ from agent.security.profile_identity import (
 from agent.tools.link_extractor import extract_links
 from agent.tools.parser import parse_file, parse_jd_structured, parse_resume_structured
 from agent.tools.rubric_builder import build_rubric_bundle
+
+_GITHUB_THREADS: dict[str, tuple[threading.Thread, list[Exception]]] = {}
+
+
+def retrieve_github_thread(application_id: str) -> tuple[threading.Thread | None, list[Exception]]:
+    """Retrieve and pop the GitHub background thread and errors for an application."""
+    return _GITHUB_THREADS.pop(application_id, (None, []))
 
 
 def _parallel_prep(
@@ -94,7 +94,7 @@ def prepare_screening_state(
 
     from agent.tools.github_analyzer import analyze_github_repos, extract_github_username
 
-    prep_logger = logging.getLogger("exaai_adk.prep")
+    logging.getLogger("exaai_adk.prep")
     started = time.monotonic()
 
     # --- Phase 1: Parse files (I/O-bound, must complete first) ---
@@ -119,18 +119,14 @@ def prepare_screening_state(
     github_repo_analyses: dict[str, Any] = {}
     github_error: list[Exception] = []
 
-    def _run_github_analysis(
-        username: str, urls: list[str], jd_raw_text: str
-    ) -> None:
+    def _run_github_analysis(username: str, urls: list[str], jd_raw_text: str) -> None:
         """Run async GitHub analysis in a dedicated event loop thread."""
         try:
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             # Structure JD for the analyzer (needs the raw text parsed)
             jd_struct = parse_jd_structured(jd_raw_text)
-            res = loop.run_until_complete(
-                analyze_github_repos(username, urls, asdict(jd_struct))
-            )
+            res = loop.run_until_complete(analyze_github_repos(username, urls, asdict(jd_struct)))
             github_repo_analyses.update(res)
         except Exception as e:
             github_error.append(e)
@@ -173,23 +169,17 @@ def prepare_screening_state(
         "jd_structured": asdict(jd_structured),
         "profile_urls": link_urls,
         "profile_url_meta": [
-            {"url": link.url, "source": link.source, "platform": link.platform}
-            for link in links
+            {"url": link.url, "source": link.source, "platform": link.platform} for link in links
         ],
         "redaction_count": redaction_summary.redaction_count,
         "enriched_contents": [],
         "rubric": rubric_bundle["rubric"],
-        "rubric_preamble": (
-            f"{rubric_bundle['rubric_preamble']}\n{IDENTITY_SCORING_RULES}"
-        ),
+        "rubric_preamble": (f"{rubric_bundle['rubric_preamble']}\n{IDENTITY_SCORING_RULES}"),
         "profile_trust": assessments_to_dicts(profile_assessments),
         "profile_trust_by_url": profile_trust_by_url,
         "identity_red_flags": build_identity_red_flags(profile_assessments),
-        "profile_identity_cap_score": should_cap_score_for_identity(
-            profile_assessments
-        ),
+        "profile_identity_cap_score": should_cap_score_for_identity(profile_assessments),
         "github_username": github_username,
         "github_repo_analyses": github_repo_analyses,
         "prep_latency_ms": int((time.monotonic() - started) * 1000),
     }
-

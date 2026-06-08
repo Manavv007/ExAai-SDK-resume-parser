@@ -38,9 +38,7 @@ def process_screening_submission(
 
     jd_structured = state.get("jd_structured") or {}
     rubric = state.get("rubric")
-    rubric_models = (
-        build_rubric(jd_structured) if not rubric else rubric
-    )
+    rubric_models = build_rubric(jd_structured) if not rubric else rubric
 
     try:
         normalized = normalize_screening_result(

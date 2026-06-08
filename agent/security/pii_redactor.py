@@ -53,6 +53,7 @@ _ENTITY_PRIORITY: dict[str, int] = {
 # Analyzer instance cache (singleton)
 # ---------------------------------------------------------------------------
 
+
 @lru_cache
 def _get_analyzer() -> AnalyzerEngine:
     return AnalyzerEngine()
@@ -120,6 +121,7 @@ def clear_analysis_cache() -> None:
 # Span deduplication
 # ---------------------------------------------------------------------------
 
+
 def _non_overlapping_results(results: list) -> list:
     """Drop overlapping spans, keeping higher-priority entity types."""
     ordered = sorted(
@@ -140,6 +142,7 @@ def _non_overlapping_results(results: list) -> list:
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
 
 def redact_text(
     text: str,

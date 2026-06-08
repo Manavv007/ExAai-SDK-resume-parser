@@ -114,6 +114,7 @@ async def analyze_github(tool_context: ToolContext) -> dict[str, Any]:
         }
 
     from agent.tools.github_analyzer import analyze_github_repos
+
     try:
         profile_urls = tool_context.state.get("profile_urls") or []
         jd_structured = tool_context.state.get("jd_structured") or {}

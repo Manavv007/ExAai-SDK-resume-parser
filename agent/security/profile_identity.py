@@ -15,6 +15,7 @@ class _ProfileLinkLike(Protocol):
     url: str
     source: str
 
+
 _EMAIL_RE = re.compile(
     r"(?i)(?<![A-Za-z0-9._%+\-])([A-Za-z0-9._%+\-]+)@([A-Za-z0-9.\-]+\.[A-Za-z]{2,})"
 )
@@ -372,8 +373,7 @@ def _is_identity_profile_host(url: str) -> bool:
         return False
     host = urlparse(normalized).netloc.lower().replace("www.", "")
     return any(
-        host == profile_host or host.endswith("." + profile_host)
-        for profile_host in _PROFILE_HOSTS
+        host == profile_host or host.endswith("." + profile_host) for profile_host in _PROFILE_HOSTS
     )
 
 

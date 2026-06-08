@@ -32,7 +32,7 @@ def test_extract_github_username() -> None:
         "https://linkedin.com/in/someone",
     ]
     assert extract_github_username(urls) == "johnsmith"
-    
+
     # Test skipping standard GitHub paths
     urls_standard = [
         "https://github.com/sponsors",
@@ -88,7 +88,8 @@ def test_score_repo_relevance() -> None:
     )
     jd_keywords = {"python", "fastapi", "docker"}
     score = _score_repo_relevance(repo, jd_keywords)
-    # Match: language (python), name (fastapi), description (fastapi), topics (fastapi), stars (10 * 0.1)
+    # Match: language (python), name (fastapi), description (fastapi),
+    # topics (fastapi), stars (10 * 0.1)
     assert score > 20.0
 
 
@@ -233,13 +234,17 @@ async def test_evaluate_sandbox_repos_returns_timeout_reports() -> None:
             "provider": "cloud_run",
             "clone_ok": False,
             "detected_stack": [],
+            "repo_profile": {},
             "commands": [],
             "quality_signals": {},
             "risk_flags": [],
+            "findings": [],
             "summary": (
                 "Sandbox evaluation did not finish within the screening wait budget; "
                 "static GitHub evidence was used instead."
             ),
+            "overall_assessment": "",
+            "confidence": "low",
             "timed_out": True,
             "skipped_reason": "Sandbox wait budget exceeded after 0.01s.",
         }
@@ -268,10 +273,10 @@ import (
     assert "fastapi" in _parse_dependencies_from_code("app.py", py_code)
     assert "sqlalchemy" in _parse_dependencies_from_code("app.py", py_code)
     assert "os" not in _parse_dependencies_from_code("app.py", py_code)  # stdlib ignored
-    
+
     assert "react" in _parse_dependencies_from_code("app.js", js_code)
     assert "lodash" in _parse_dependencies_from_code("app.js", js_code)
-    
+
     assert "gin" in _parse_dependencies_from_code("main.go", go_code)
 
 
@@ -319,14 +324,14 @@ async def test_analyze_github_repos() -> None:
             updated_at="2026-06-06T12:00:00Z",
         )
     ]
-    
+
     mock_tree = [
         MagicMock(path="README.md", type="blob"),
         MagicMock(path="main.py", type="blob"),
         MagicMock(path="requirements.txt", type="blob"),
         MagicMock(path="tests/test_main.py", type="blob"),
     ]
-    
+
     def mock_get_content(owner, repo, path):
         if path == "requirements.txt":
             return "fastapi\nuvicorn"
@@ -344,13 +349,27 @@ async def test_analyze_github_repos() -> None:
 
     # Patch GitHubClient calls
     with (
-        patch("agent.tools.github_client.GitHubClient.get_user_repos", new_callable=AsyncMock) as mock_get_repos,
-        patch("agent.tools.github_client.GitHubClient.get_repo_languages", new_callable=AsyncMock) as mock_langs,
-        patch("agent.tools.github_client.GitHubClient.get_repo_tree", new_callable=AsyncMock) as mock_get_tree,
-        patch("agent.tools.github_client.GitHubClient.get_file_content", new_callable=AsyncMock) as mock_get_file_content,
-        patch("agent.tools.github_client.GitHubClient.get_recent_commits", new_callable=AsyncMock) as mock_get_commits,
-        patch("agent.tools.github_client.GitHubClient.get_user_events", new_callable=AsyncMock) as mock_get_events,
-        patch("agent.tools.github_analyzer._generate_coding_style_summary", new_callable=AsyncMock) as mock_gen_summary,
+        patch(
+            "agent.tools.github_client.GitHubClient.get_user_repos", new_callable=AsyncMock
+        ) as mock_get_repos,
+        patch(
+            "agent.tools.github_client.GitHubClient.get_repo_languages", new_callable=AsyncMock
+        ) as mock_langs,
+        patch(
+            "agent.tools.github_client.GitHubClient.get_repo_tree", new_callable=AsyncMock
+        ) as mock_get_tree,
+        patch(
+            "agent.tools.github_client.GitHubClient.get_file_content", new_callable=AsyncMock
+        ) as mock_get_file_content,
+        patch(
+            "agent.tools.github_client.GitHubClient.get_recent_commits", new_callable=AsyncMock
+        ) as mock_get_commits,
+        patch(
+            "agent.tools.github_client.GitHubClient.get_user_events", new_callable=AsyncMock
+        ) as mock_get_events,
+        patch(
+            "agent.tools.github_analyzer._generate_coding_style_summary", new_callable=AsyncMock
+        ) as mock_gen_summary,
         patch("agent.tools.github_analyzer.get_settings") as mock_get_settings,
     ):
         mock_settings = MagicMock()
@@ -373,10 +392,17 @@ async def test_analyze_github_repos() -> None:
         mock_get_file_content.side_effect = mock_get_content
         mock_get_commits.return_value = []
         mock_get_events.return_value = []
-        mock_gen_summary.return_value = ("Clean FastAPI setup with unit tests.", "strong", "Active open source collaborator.", "Descriptive, high quality commits.")
+        mock_gen_summary.return_value = (
+            "Clean FastAPI setup with unit tests.",
+            "strong",
+            "Active open source collaborator.",
+            "Descriptive, high quality commits.",
+        )
 
-        analysis = await analyze_github_repos("testuser", ["https://github.com/testuser"], jd_structured)
-        
+        analysis = await analyze_github_repos(
+            "testuser", ["https://github.com/testuser"], jd_structured
+        )
+
         assert analysis["username"] == "testuser"
         assert analysis["total_public_repos"] == 1
         assert analysis["total_stars"] == 10
@@ -384,7 +410,7 @@ async def test_analyze_github_repos() -> None:
         assert analysis["coding_style_summary"] == "Clean FastAPI setup with unit tests."
         assert analysis["collaboration_summary"] == "Active open source collaborator."
         assert analysis["commit_hygiene"] == "Descriptive, high quality commits."
-        
+
         assert len(analysis["repo_analyses"]) == 1
         repo_an = analysis["repo_analyses"][0]
         assert repo_an["name"] == "repo1"
@@ -424,10 +450,18 @@ async def test_analyze_github_repos_attaches_sandbox_reports() -> None:
     ]
 
     with (
-        patch("agent.tools.github_client.GitHubClient.get_user_repos", new_callable=AsyncMock) as mock_get_repos,
-        patch("agent.tools.github_client.GitHubClient.get_user_events", new_callable=AsyncMock) as mock_get_events,
-        patch("agent.tools.github_analyzer._analyze_single_repo", new_callable=AsyncMock) as mock_analyze_repo,
-        patch("agent.tools.github_analyzer._evaluate_sandbox_repos", new_callable=AsyncMock) as mock_sandbox,
+        patch(
+            "agent.tools.github_client.GitHubClient.get_user_repos", new_callable=AsyncMock
+        ) as mock_get_repos,
+        patch(
+            "agent.tools.github_client.GitHubClient.get_user_events", new_callable=AsyncMock
+        ) as mock_get_events,
+        patch(
+            "agent.tools.github_analyzer._analyze_single_repo", new_callable=AsyncMock
+        ) as mock_analyze_repo,
+        patch(
+            "agent.tools.github_analyzer._evaluate_sandbox_repos", new_callable=AsyncMock
+        ) as mock_sandbox,
         patch("agent.tools.github_analyzer.get_settings") as mock_get_settings,
     ):
         mock_settings = MagicMock()
@@ -474,6 +508,7 @@ async def test_analyze_github_repos_attaches_sandbox_reports() -> None:
 
 def test_analyze_collaboration() -> None:
     from agent.tools.github_analyzer import _analyze_collaboration
+
     events = [
         {
             "type": "PullRequestEvent",
@@ -489,7 +524,7 @@ def test_analyze_collaboration() -> None:
             "type": "PushEvent",
             "repo": {"name": "other-owner/repo3"},
             "payload": {},
-        }
+        },
     ]
     res = _analyze_collaboration("testuser", events)
     assert res["pull_requests_created"] == 1
@@ -502,16 +537,18 @@ def test_analyze_collaboration() -> None:
 
 def test_score_path_relevance() -> None:
     from agent.tools.github_analyzer import _score_path_relevance
+
     jd_keywords = {"db", "fastapi", "auth"}
-    
+
     score1 = _score_path_relevance("src/auth/service.py", jd_keywords)
     score2 = _score_path_relevance("docs/readme.txt", jd_keywords)
-    
+
     assert score1 > score2
 
 
 def test_extract_relevant_snippet() -> None:
     from agent.tools.github_analyzer import _extract_relevant_snippet
+
     content = "line 1\nline 2 with database\nline 3\nline 4"
     jd_keywords = {"database"}
     snippet = _extract_relevant_snippet(content, jd_keywords, max_chars=30)
@@ -520,7 +557,7 @@ def test_extract_relevant_snippet() -> None:
 
 def test_generate_coding_style_summary_heuristic() -> None:
     from agent.tools.github_analyzer import _generate_coding_style_summary_heuristic
-    
+
     repos_data = [
         {
             "name": "repo1",
@@ -531,13 +568,13 @@ def test_generate_coding_style_summary_heuristic() -> None:
             "has_docker": False,
             "commit_quality": "descriptive",
             "stars": 1,
-            "complexity_estimate": "simple"
+            "complexity_estimate": "simple",
         }
     ]
     summary, signal, collab, hygiene = _generate_coding_style_summary_heuristic(
         "testuser", repos_data, "Opened 1 PR."
     )
-    
+
     assert "Python" in summary
     assert "JavaScript" in summary
     assert "repo1" in summary
@@ -550,6 +587,7 @@ def test_generate_coding_style_summary_heuristic() -> None:
 
 def test_generate_coding_style_summary_heuristic_empty() -> None:
     from agent.tools.github_analyzer import _generate_coding_style_summary_heuristic
+
     summary, signal, collab, hygiene = _generate_coding_style_summary_heuristic(
         "testuser", [], "No PRs."
     )

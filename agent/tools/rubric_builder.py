@@ -58,9 +58,7 @@ def _coerce_jd_structured(jd_structured: JdStructured | dict[str, Any]) -> JdStr
         req_type = item.get("requirement_type")
         if req_type not in VALID_REQUIREMENT_TYPES:
             req_type = None
-        requirements.append(
-            JdRequirement(text=text, weight=weight, requirement_type=req_type)
-        )
+        requirements.append(JdRequirement(text=text, weight=weight, requirement_type=req_type))
 
     return JdStructured(
         job_title=jd_structured.get("job_title"),
@@ -219,10 +217,7 @@ def derive_overall_score_from_matches(
         except (TypeError, ValueError):
             score = 0
         score = max(0, min(100, score))
-        is_must = (
-            index < len(rubric)
-            and _rubric_item_weight(rubric[index]) == "must_have"
-        )
+        is_must = index < len(rubric) and _rubric_item_weight(rubric[index]) == "must_have"
         weight = 2 if is_must else 1
         weighted_sum += score * weight
         weight_total += weight

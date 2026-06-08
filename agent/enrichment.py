@@ -176,9 +176,7 @@ def _dedupe_preserve_order(urls: list[str]) -> list[str]:
 
 def _enriched_url_set(state: dict[str, Any]) -> set[str]:
     return {
-        str(item.get("url"))
-        for item in (state.get("enriched_contents") or [])
-        if item.get("url")
+        str(item.get("url")) for item in (state.get("enriched_contents") or []) if item.get("url")
     }
 
 
@@ -249,6 +247,7 @@ def plan_batch_profile_fetches(
 # ---------------------------------------------------------------------------
 # Batch fetch helpers
 # ---------------------------------------------------------------------------
+
 
 def _classify_and_check_url(
     url: str,
@@ -326,12 +325,14 @@ def _build_batch_results(
     for url in eligible_urls:
         raw = url_to_raw.get(url, "")
         if not raw:
-            results.append({
-                "ok": False,
-                "url": url,
-                "error": "exa_fetch_failed",
-                "message": "Empty response from Exa.",
-            })
+            results.append(
+                {
+                    "ok": False,
+                    "url": url,
+                    "error": "exa_fetch_failed",
+                    "message": "Empty response from Exa.",
+                }
+            )
             continue
 
         allow = check_allowlist(url)
@@ -342,14 +343,16 @@ def _build_batch_results(
             allow_result=allow,
             settings=settings,
         )
-        results.append({
-            "ok": True,
-            "url": url,
-            "domain_category": allow.domain_category,
-            "profile_trust": entry["profile_trust"],
-            "content_preview": _content_preview(entry["content"]),
-            "entry": entry,
-        })
+        results.append(
+            {
+                "ok": True,
+                "url": url,
+                "domain_category": allow.domain_category,
+                "profile_trust": entry["profile_trust"],
+                "content_preview": _content_preview(entry["content"]),
+                "entry": entry,
+            }
+        )
     return results
 
 
@@ -382,9 +385,7 @@ async def fetch_profile_urls_batch_async(
     cache = get_url_cache()
 
     # Run the batch fetch in a thread to avoid blocking the event loop
-    url_to_raw, _cached_urls = await asyncio.to_thread(
-        _fetch_batch_with_cache, eligible, cache
-    )
+    url_to_raw, _cached_urls = await asyncio.to_thread(_fetch_batch_with_cache, eligible, cache)
 
     results = _build_batch_results(eligible, url_to_raw, trust_by_url, settings)
 
@@ -402,13 +403,9 @@ async def fetch_profile_urls_batch_async(
         "fetched": fetched,
         "skipped": skipped,
         "truncated": truncated,
-        "results": [
-            {k: v for k, v in item.items() if k != "entry"}
-            for item in results
-        ],
+        "results": [{k: v for k, v in item.items() if k != "entry"} for item in results],
         "message": (
-            f"Fetched {fetched} profile(s). "
-            "Full sanitized content stored in session for scoring."
+            f"Fetched {fetched} profile(s). Full sanitized content stored in session for scoring."
         ),
     }
 
@@ -455,22 +452,15 @@ async def enrich_profile_urls_async(state: dict[str, Any]) -> list[dict[str, Any
 
     # Batch-fetch all URLs in one API call (cached URLs are free)
     cache = get_url_cache()
-    url_to_raw, _cached_urls = await asyncio.to_thread(
-        _fetch_batch_with_cache, to_fetch, cache
-    )
+    url_to_raw, _cached_urls = await asyncio.to_thread(_fetch_batch_with_cache, to_fetch, cache)
 
-    batch_results = _build_batch_results(
-        to_fetch, url_to_raw, trust_by_url, settings
-    )
+    batch_results = _build_batch_results(to_fetch, url_to_raw, trust_by_url, settings)
 
     for item in batch_results:
         if item.get("ok") and "entry" in item:
             enriched.append(item["entry"])
     state["enriched_contents"] = enriched
-    results.extend(
-        {k: v for k, v in item.items() if k != "entry"}
-        for item in batch_results
-    )
+    results.extend({k: v for k, v in item.items() if k != "entry"} for item in batch_results)
     return results
 
 

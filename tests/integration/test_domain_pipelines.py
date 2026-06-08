@@ -57,15 +57,12 @@ async def test_domain_pipeline_completed(
     assert any(case.crawl_url_substring in u for u in prep["profile_urls"])
 
     mock_generate.return_value = load_llm_fixture(rubric=prep["rubric"])
-    mock_fetch.side_effect = batch_fetch_side_effect(
-        f"External profile content for {case.key}."
-    )
+    mock_fetch.side_effect = batch_fetch_side_effect(f"External profile content for {case.key}.")
 
     mock_cache = MagicMock()
     mock_cache.get.return_value = None
 
     with patch("agent.enrichment.get_url_cache", return_value=mock_cache):
-
         with patch(
             "agent.enrichment.validate_url",
             return_value=type("R", (), {"allowed": True, "reason": None})(),

@@ -11,9 +11,9 @@ from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 
 from agent.adk_tools import (
+    analyze_github,
     fetch_profiles,
     submit_screening_result,
-    analyze_github,
 )
 from agent.agent_runner import SCREENING_AGENT_INSTRUCTION
 from agent.audit.logger import log_screening_result
@@ -118,17 +118,20 @@ def score_with_validation(
 
 async def run_screening_pipeline_async(state: dict[str, Any]) -> dict[str, Any]:
     """Deterministic path: enrich all profile URLs, then score with Gemini."""
+    import asyncio
+
     from agent.enrichment import enrich_profile_urls_async
     from agent.prep import retrieve_github_thread
-    import asyncio
 
     application_id = state.get("application_id", "")
     github_thread, github_error = retrieve_github_thread(application_id)
     if github_thread is not None:
+
         async def wait_for_github():
             await asyncio.to_thread(github_thread.join)
             if github_error:
                 import logging
+
                 logging.getLogger("exaai_adk.prep").error(
                     f"Error during GitHub deep analysis: {github_error[0]}"
                 )
@@ -181,6 +184,7 @@ async def run_screening_async(
             github_thread.join()
             if github_error:
                 import logging
+
                 logging.getLogger("exaai_adk.prep").error(
                     f"Error during GitHub deep analysis: {github_error[0]}"
                 )

@@ -158,9 +158,7 @@ def test_normalize_maps_recommendation_aliases() -> None:
 def test_normalize_omits_processing_time_ms_when_unknown(test_settings) -> None:
     fixture = json.loads((FIXTURES / "valid_result_completed.json").read_text(encoding="utf-8"))
     fixture["metadata"] = {
-        k: v
-        for k, v in fixture["metadata"].items()
-        if k != "processing_time_ms"
+        k: v for k, v in fixture["metadata"].items() if k != "processing_time_ms"
     }
 
     normalized = normalize_screening_result(

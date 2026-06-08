@@ -39,9 +39,7 @@ def test_infer_requirement_type_education() -> None:
 
 
 def test_enforce_must_have_score_cap() -> None:
-    rubric = build_rubric(
-        JdStructured(must_have=["Python"], nice_to_have=[], domain="technical")
-    )
+    rubric = build_rubric(JdStructured(must_have=["Python"], nice_to_have=[], domain="technical"))
     low_match = {
         "requirement": "Python",
         "match_score": 20,

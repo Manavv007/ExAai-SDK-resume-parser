@@ -51,22 +51,14 @@ def _normalize_openrouter_model(model: str) -> str:
 
 def _is_free_openrouter_slug(model: str) -> bool:
     lowered = model.strip().lower()
-    return (
-        lowered in OPENROUTER_FREE_ROUTERS
-        or lowered.endswith(":free")
-        or "/free" in lowered
-    )
+    return lowered in OPENROUTER_FREE_ROUTERS or lowered.endswith(":free") or "/free" in lowered
 
 
 def is_openrouter_free_tier(settings: Settings, *, for_agent: bool = False) -> bool:
     """True when the configured OpenRouter model is a free-tier route."""
     if resolve_llm_provider(settings) != "openrouter":
         return False
-    model = (
-        openrouter_agent_model_id(settings)
-        if for_agent
-        else openrouter_model_id(settings)
-    )
+    model = openrouter_agent_model_id(settings) if for_agent else openrouter_model_id(settings)
     return _is_free_openrouter_slug(model)
 
 
@@ -120,7 +112,7 @@ def is_rate_limit_error(exc: BaseException) -> bool:
     if name in {"RateLimitError", "RateLimitException"}:
         return True
     text = str(exc).lower()
-    return "ratelimit" in text or "rate limit" in text or "code\":429" in text or " 429" in text
+    return "ratelimit" in text or "rate limit" in text or 'code":429' in text or " 429" in text
 
 
 def is_tool_use_unsupported_error(exc: BaseException) -> bool:
@@ -185,9 +177,7 @@ def create_adk_model(settings: Settings) -> Any:
 
             async def generate_content_async(self, llm_request: Any, stream: bool = False):
                 increment_llm_call_count(model=str(self.model), source="adk_agent")
-                async for chunk in super().generate_content_async(
-                    llm_request, stream=stream
-                ):
+                async for chunk in super().generate_content_async(llm_request, stream=stream):
                     yield chunk
 
         agent_model = openrouter_agent_model_id(settings)
@@ -206,11 +196,7 @@ def create_adk_model(settings: Settings) -> Any:
 def model_version_label(settings: Settings, *, for_agent: bool = False) -> str:
     provider = resolve_llm_provider(settings)
     if provider == "openrouter":
-        model = (
-            openrouter_agent_model_id(settings)
-            if for_agent
-            else openrouter_model_id(settings)
-        )
+        model = openrouter_agent_model_id(settings) if for_agent else openrouter_model_id(settings)
         return f"exaai-adk/{model}"
     return f"exaai-adk/{settings.gemini_model_id}"
 
@@ -300,20 +286,21 @@ def generate_json(prompt: str, *, correction: str | None = None) -> dict[str, An
             text = message.tool_calls[0].function.arguments or ""
         return _parse_json_response(text)
 
+    import time
+
     from google import genai
     from google.genai import types
     from google.genai.errors import APIError, ServerError
-    import time
 
     if not settings.gemini_api_key.strip():
         raise RuntimeError("GEMINI_API_KEY is not configured")
 
     client = genai.Client(api_key=settings.gemini_api_key)
-    
+
     max_retries = 3
     delay = 1.5
     response = None
-    
+
     for attempt in range(max_retries):
         try:
             increment_llm_call_count(model=settings.gemini_model_id, source="scorer")
@@ -330,7 +317,9 @@ def generate_json(prompt: str, *, correction: str | None = None) -> dict[str, An
             break
         except (APIError, ServerError) as e:
             status_code = getattr(e, "code", getattr(e, "status_code", None))
-            if (status_code in (503, 429) or "503" in str(e) or "429" in str(e)) and attempt < max_retries - 1:
+            if (
+                status_code in (503, 429) or "503" in str(e) or "429" in str(e)
+            ) and attempt < max_retries - 1:
                 logger.warning(
                     f"Gemini API returned transient error (attempt {attempt + 1}/{max_retries}). "
                     f"Retrying in {delay}s... Error: {e}"

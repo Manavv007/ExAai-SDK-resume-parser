@@ -7,6 +7,7 @@ import logging
 import time
 from dataclasses import dataclass, field
 from typing import Any
+
 import httpx
 
 from agent.config import get_settings
@@ -56,13 +57,14 @@ class GitHubClient:
         async with GitHubClient() as client:
             repos = await client.get_user_repos("octocat")
     """
+
     _rate_limit_reset_time = 0.0
 
     def __init__(self, token: str | None = None, timeout: float | None = None) -> None:
         settings = get_settings()
         self.token = (token or settings.github_token).strip()
         self.timeout = timeout or float(settings.github_api_timeout_seconds)
-        
+
         self.headers = {
             "Accept": "application/vnd.github.v3+json",
             "User-Agent": f"exaai-adk/{settings.agent_version}",
@@ -97,16 +99,14 @@ class GitHubClient:
             await self._client.aclose()
             self._client = None
 
-    async def __aenter__(self) -> "GitHubClient":
+    async def __aenter__(self) -> GitHubClient:
         self._get_client()
         return self
 
     async def __aexit__(self, *exc: Any) -> None:
         await self.close()
 
-    async def _request(
-        self, method: str, url: str, **kwargs: Any
-    ) -> httpx.Response:
+    async def _request(self, method: str, url: str, **kwargs: Any) -> httpx.Response:
         """Make an async request to the GitHub API with error handling."""
         now = time.time()
         if now < GitHubClient._rate_limit_reset_time:
@@ -115,33 +115,39 @@ class GitHubClient:
             mock_response = httpx.Response(
                 status_code=403,
                 request=mock_request,
-                content=b'{"message": "GitHub API rate limit exceeded (skipped by circuit breaker)"}'
+                content=(
+                    b'{"message": "GitHub API rate limit exceeded '
+                    b'(skipped by circuit breaker)"}'
+                ),
             )
             raise httpx.HTTPStatusError(
                 message="GitHub API rate limit exceeded (skipped)",
                 request=mock_request,
-                response=mock_response
+                response=mock_response,
             )
 
         client = self._get_client()
-        
+
         try:
             response = await client.request(method, url, **kwargs)
             # Log rate limit info if available
             limit = response.headers.get("X-RateLimit-Limit")
             remaining = response.headers.get("X-RateLimit-Remaining")
             if remaining and int(remaining) < 10:
-                logger.warning(
-                    f"GitHub API rate limit is low: {remaining}/{limit} remaining."
-                )
+                logger.warning(f"GitHub API rate limit is low: {remaining}/{limit} remaining.")
 
             if remaining and int(remaining) == 0:
                 reset_header = response.headers.get("X-RateLimit-Reset")
                 try:
-                    GitHubClient._rate_limit_reset_time = float(reset_header) if reset_header else time.time() + 3600
+                    GitHubClient._rate_limit_reset_time = (
+                        float(reset_header) if reset_header else time.time() + 3600
+                    )
                 except ValueError:
                     GitHubClient._rate_limit_reset_time = time.time() + 3600
-                logger.error(f"GitHub API rate limit hit 0. Circuit breaker active until epoch {GitHubClient._rate_limit_reset_time}")
+                logger.error(
+                    f"GitHub API rate limit hit 0. Circuit breaker active "
+                    f"until epoch {GitHubClient._rate_limit_reset_time}"
+                )
 
             response.raise_for_status()
             return response
@@ -150,11 +156,15 @@ class GitHubClient:
                 logger.error("GitHub API rate limit exceeded.")
                 reset_header = e.response.headers.get("X-RateLimit-Reset")
                 try:
-                    GitHubClient._rate_limit_reset_time = float(reset_header) if reset_header else time.time() + 3600
+                    GitHubClient._rate_limit_reset_time = (
+                        float(reset_header) if reset_header else time.time() + 3600
+                    )
                 except ValueError:
                     GitHubClient._rate_limit_reset_time = time.time() + 3600
             else:
-                logger.error(f"GitHub API HTTP error {e.response.status_code} on {url}: {e.response.text}")
+                logger.error(
+                    f"GitHub API HTTP error {e.response.status_code} on {url}: {e.response.text}"
+                )
             raise
         except Exception as e:
             logger.error(f"GitHub API network error on {url}: {e}")
@@ -164,11 +174,11 @@ class GitHubClient:
         """Fetch list of public repositories for a user."""
         url = f"https://api.github.com/users/{username}/repos"
         params = {"per_page": 100, "sort": "updated"}
-        
+
         try:
             response = await self._request("GET", url, params=params)
             repos_data = response.json()
-            
+
             repos = []
             for repo in repos_data:
                 repos.append(
@@ -194,7 +204,7 @@ class GitHubClient:
     async def get_repo_languages(self, owner: str, repo: str) -> dict[str, int]:
         """Fetch the bytes of code written in each language in a repository."""
         url = f"https://api.github.com/repos/{owner}/{repo}/languages"
-        
+
         try:
             response = await self._request("GET", url)
             return response.json()
@@ -206,11 +216,11 @@ class GitHubClient:
         """Fetch recursive file tree of a repository."""
         url = f"https://api.github.com/repos/{owner}/{repo}/git/trees/{branch}"
         params = {"recursive": "1"}
-        
+
         try:
             response = await self._request("GET", url, params=params)
             tree_data = response.json().get("tree", [])
-            
+
             entries = []
             for entry in tree_data:
                 entries.append(
@@ -230,7 +240,7 @@ class GitHubClient:
     async def get_file_content(self, owner: str, repo: str, path: str) -> str:
         """Fetch file content from a repository."""
         url = f"https://api.github.com/repos/{owner}/{repo}/contents/{path}"
-        
+
         try:
             response = await self._request("GET", url)
             data = response.json()
@@ -251,11 +261,11 @@ class GitHubClient:
         params: dict[str, Any] = {"per_page": limit}
         if author:
             params["author"] = author
-            
+
         try:
             response = await self._request("GET", url, params=params)
             commits_data = response.json()
-            
+
             commits = []
             for c in commits_data:
                 commit_obj = c.get("commit", {})
@@ -277,7 +287,7 @@ class GitHubClient:
         """Fetch public events for a user (contains PRs, issues, reviews)."""
         url = f"https://api.github.com/users/{username}/events"
         params = {"per_page": 30}
-        
+
         try:
             response = await self._request("GET", url, params=params)
             return response.json()

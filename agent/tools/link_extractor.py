@@ -18,9 +18,7 @@ _BARE_DOMAIN_PATTERN = re.compile(
     r"(?:linkedin\.com/in/[\w\-]+)|(?:github\.com/[\w\-]+))"
 )
 # Social handles only — exclude email addresses (e.g. user@gmail.com → not @gmail.com).
-_HANDLE_PATTERN = re.compile(
-    r"(?<![A-Za-z0-9._%+\-])@([A-Za-z0-9_\-]{2,39})(?![A-Za-z0-9._%+\-])"
-)
+_HANDLE_PATTERN = re.compile(r"(?<![A-Za-z0-9._%+\-])@([A-Za-z0-9_\-]{2,39})(?![A-Za-z0-9._%+\-])")
 _EMAIL_DOMAIN_HANDLES = frozenset(
     {
         "gmail.com",

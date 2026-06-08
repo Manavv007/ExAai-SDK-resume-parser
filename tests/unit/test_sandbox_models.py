@@ -62,8 +62,7 @@ def test_repo_execution_report_step_helpers_and_compact() -> None:
         ],
         summary="Buildable Python service with failing integration-style tests.",
         overall_assessment=(
-            "This looks like a real service, but the failing test suite is a "
-            "quality concern."
+            "This looks like a real service, but the failing test suite is a quality concern."
         ),
         confidence="high",
     )

@@ -132,20 +132,17 @@ async def test_cloud_run_provider_runs_job_and_reads_report() -> None:
     assert len(http_client.gets) == 2
     post = http_client.posts[0]
     assert post["headers"]["Authorization"] == "Bearer token-1"
-    assert post["url"].endswith(
-        "/projects/project-1/locations/asia-south1/jobs/repo-evaluator:run"
-    )
+    assert post["url"].endswith("/projects/project-1/locations/asia-south1/jobs/repo-evaluator:run")
     overrides = post["json"]["overrides"]
     assert overrides["taskCount"] == 1
     assert overrides["timeout"] == "123s"
-    env = {
-        item["name"]: item["value"]
-        for item in overrides["containerOverrides"][0]["env"]
-    }
+    env = {item["name"]: item["value"] for item in overrides["containerOverrides"][0]["env"]}
     assert env["REPO_URL"] == "https://github.com/owner/project"
     assert env["REPO_NAME"] == "owner/project"
     assert env["SANDBOX_TIMEOUT_SECONDS"] == "123"
-    assert env["REPORT_OUTPUT_URI"].startswith("gs://reports-bucket/candidate-sandbox/owner-project/")
+    assert env["REPORT_OUTPUT_URI"].startswith(
+        "gs://reports-bucket/candidate-sandbox/owner-project/"
+    )
     assert json.loads(env["COMMAND_PLAN_JSON"]) == [
         {"step": "test", "command": "python -m pytest -q"}
     ]

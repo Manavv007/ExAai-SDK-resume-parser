@@ -128,17 +128,16 @@ def build_agent_user_message(state: dict[str, Any]) -> str:
                 f"- Repo: {r.get('name')} ({r.get('url')})\n"
                 f"  Languages: {r.get('languages')}\n"
                 f"  Stars: {r.get('stars')}, Type: {r.get('project_type')}\n"
-                f"  Maturity: tests={r.get('has_tests')}, ci={r.get('has_ci')}, docs={r.get('has_docs')}, docker={r.get('has_docker')}\n"
+                f"  Maturity: tests={r.get('has_tests')}, ci={r.get('has_ci')}, "
+                f"docs={r.get('has_docs')}, docker={r.get('has_docker')}\n"
                 f"  Dependencies: {r.get('dependency_summary')}\n"
-                f"  Commit Frequency: {r.get('commit_frequency')}, Commit Quality: {r.get('commit_quality')}, Complexity: {r.get('complexity_estimate')}"
+                f"  Commit Frequency: {r.get('commit_frequency')}, "
+                f"Commit Quality: {r.get('commit_quality')}, "
+                f"Complexity: {r.get('complexity_estimate')}"
             )
         repos_str = "\n".join(repos_summary)
         sandbox_reports = github_repo_analyses.get("sandbox_reports") or []
-        sandbox_str = (
-            json.dumps(sandbox_reports, indent=2)[:4000]
-            if sandbox_reports
-            else "(none)"
-        )
+        sandbox_str = json.dumps(sandbox_reports, indent=2)[:4000] if sandbox_reports else "(none)"
         github_block = (
             f"\nGITHUB REPOSITORY ANALYSIS:\n"
             f"Username: {github_repo_analyses.get('username')}\n"

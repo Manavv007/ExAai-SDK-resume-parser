@@ -301,9 +301,7 @@ async def test_api_screen_end_to_end_prep_redacts_pii(
                         "job_id": JOB_ID,
                         "jd_text": jd_path.read_text(encoding="utf-8"),
                     },
-                    files={
-                        "resume": ("resume.txt", resume_path.read_bytes(), "text/plain")
-                    },
+                    files={"resume": ("resume.txt", resume_path.read_bytes(), "text/plain")},
                 )
 
     assert response.status_code == 200

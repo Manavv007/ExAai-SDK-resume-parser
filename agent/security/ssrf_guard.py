@@ -71,11 +71,7 @@ def _ip_is_blocked(ip_str: str) -> bool:
     except ValueError:
         return True
     return bool(
-        ip.is_private
-        or ip.is_loopback
-        or ip.is_link_local
-        or ip.is_reserved
-        or ip.is_multicast
+        ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast
     )
 
 

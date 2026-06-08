@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
 
 from agent.tools.github_client import GitHubClient
+
 
 @pytest.fixture(autouse=True)
 def reset_rate_limit() -> None:
     GitHubClient._rate_limit_reset_time = 0.0
     yield
     GitHubClient._rate_limit_reset_time = 0.0
+
 
 @pytest.mark.asyncio
 async def test_get_user_repos() -> None:
@@ -142,6 +145,7 @@ async def test_get_user_events() -> None:
 @pytest.mark.asyncio
 async def test_github_client_rate_limit_circuit_breaker() -> None:
     import time
+
     # Reset the class-level variable first to be safe
     GitHubClient._rate_limit_reset_time = 0.0
 
@@ -152,13 +156,13 @@ async def test_github_client_rate_limit_circuit_breaker() -> None:
     mock_response.headers = {
         "X-RateLimit-Remaining": "0",
         "X-RateLimit-Limit": "5000",
-        "X-RateLimit-Reset": str(time.time() + 100)
+        "X-RateLimit-Reset": str(time.time() + 100),
     }
     mock_response.status_code = 200
 
     with patch("httpx.AsyncClient.request", new_callable=AsyncMock) as mock_request:
         mock_request.return_value = mock_response
-        
+
         # 1. First call works but sets the rate limit reset time
         repos = await client.get_user_repos("testuser")
         assert repos == []
@@ -168,7 +172,7 @@ async def test_github_client_rate_limit_circuit_breaker() -> None:
         # (caught by get_user_repos and returns empty list)
         repos2 = await client.get_user_repos("testuser")
         assert repos2 == []
-        
+
         # Verify that mock_request was only called ONCE because the second one was skipped!
         assert mock_request.call_count == 1
 

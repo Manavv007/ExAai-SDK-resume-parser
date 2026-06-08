@@ -9,9 +9,7 @@ from agent.tools.parser import JdRequirement, JdStructured
 
 _BULLET = re.compile(r"^[\-*•]\s+(.+)$")
 _NUMBERED = re.compile(r"^\d+[\.\)]\s+(.+)$")
-_INLINE_MUST = re.compile(
-    r"(?i)^(?:must\s+have|required|essential|minimum)\s*:\s*(.+)$"
-)
+_INLINE_MUST = re.compile(r"(?i)^(?:must\s+have|required|essential|minimum)\s*:\s*(.+)$")
 _INLINE_NICE = re.compile(
     r"(?i)^(?:preferred|nice\s+to\s+have|nice-to-have|bonus|plus)\s*:\s*(.+)$"
 )
@@ -275,10 +273,7 @@ def detect_jd_domain(text: str) -> str:
         "healthcare": ("nurse", "rn ", "clinical", "patient", "hospital", "healthcare"),
     }
     lowered = text.lower()
-    scores = {
-        domain: sum(1 for kw in kws if kw in lowered)
-        for domain, kws in keywords.items()
-    }
+    scores = {domain: sum(1 for kw in kws if kw in lowered) for domain, kws in keywords.items()}
     best = max(scores, key=scores.get)
     return best if scores[best] > 0 else "general"
 

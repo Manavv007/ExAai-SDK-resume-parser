@@ -321,9 +321,7 @@ def _parse_requirements_from_gemini(data: dict[str, Any]) -> list[JdRequirement]
             req_type = item.get("requirement_type")
             if req_type not in VALID_REQUIREMENT_TYPES:
                 req_type = None
-            parsed.append(
-                JdRequirement(text=text, weight=weight, requirement_type=req_type)
-            )
+            parsed.append(JdRequirement(text=text, weight=weight, requirement_type=req_type))
         if parsed:
             return parsed
 

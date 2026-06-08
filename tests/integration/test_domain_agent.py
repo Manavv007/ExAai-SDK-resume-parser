@@ -50,17 +50,13 @@ async def test_domain_agent_mode_completed(
         jd_text=jd_path.read_text(encoding="utf-8"),
     )
 
-    fetch_url = next(
-        url for url in prep["profile_urls"] if case.crawl_url_substring in url
-    )
+    fetch_url = next(url for url in prep["profile_urls"] if case.crawl_url_substring in url)
     submit_payload = load_llm_fixture(rubric=prep["rubric"], score=80)
     mock_create_runner.return_value = build_scripted_runner(
         fetch_urls=[fetch_url],
         submit_payload=submit_payload,
     )
-    mock_fetch.side_effect = batch_fetch_side_effect(
-        f"External profile content for {case.key}."
-    )
+    mock_fetch.side_effect = batch_fetch_side_effect(f"External profile content for {case.key}.")
 
     mock_cache = MagicMock()
     mock_cache.get.return_value = None

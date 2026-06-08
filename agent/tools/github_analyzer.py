@@ -311,10 +311,39 @@ def _get_jd_keywords(jd_structured: dict[str, Any] | None) -> set[str]:
 
     # Common programming languages/tech
     tech_list = [
-        "python", "javascript", "typescript", "golang", "go", "rust", "java", "cpp",
-        "c++", "csharp", "c#", "ruby", "php", "swift", "kotlin", "scala", "docker",
-        "kubernetes", "aws", "gcp", "azure", "fastapi", "flask", "django", "react",
-        "vue", "angular", "node", "express", "nextjs", "next.js", "pytorch", "tensorflow"
+        "python",
+        "javascript",
+        "typescript",
+        "golang",
+        "go",
+        "rust",
+        "java",
+        "cpp",
+        "c++",
+        "csharp",
+        "c#",
+        "ruby",
+        "php",
+        "swift",
+        "kotlin",
+        "scala",
+        "docker",
+        "kubernetes",
+        "aws",
+        "gcp",
+        "azure",
+        "fastapi",
+        "flask",
+        "django",
+        "react",
+        "vue",
+        "angular",
+        "node",
+        "express",
+        "nextjs",
+        "next.js",
+        "pytorch",
+        "tensorflow",
     ]
     for tech in tech_list:
         # Check if they are mentioned in JD
@@ -330,29 +359,29 @@ def _score_repo_relevance(repo: RepoMeta, jd_keywords: set[str]) -> float:
     score = 0.0
     name_lower = repo.name.lower()
     desc_lower = (repo.description or "").lower()
-    
+
     if repo.is_fork:
         score -= 10.0
-        
+
     # 1. Primary language matches JD keyword
     if repo.language and repo.language.lower() in jd_keywords:
         score += 15.0
-        
+
     # 2. Topic matches JD keyword
     for topic in repo.topics:
         if topic.lower() in jd_keywords:
             score += 5.0
-            
+
     # 3. Name or description matches JD keyword
     for kw in jd_keywords:
         if re.search(rf"\b{re.escape(kw)}\b", name_lower):
             score += 10.0
         if re.search(rf"\b{re.escape(kw)}\b", desc_lower):
             score += 2.0
-            
+
     # 4. Popularity (stars)
     score += min(repo.stars * 0.1, 10.0)
-    
+
     return score
 
 
@@ -361,19 +390,19 @@ def _analyze_collaboration(username: str, events: list[dict[str, Any]]) -> dict[
     pr_created = 0
     pr_reviewed = 0
     external_repos = set()
-    
+
     for event in events:
         e_type = event.get("type")
         repo_info = event.get("repo", {})
         repo_name = repo_info.get("name", "")
-        
+
         owner = ""
         if repo_name and "/" in repo_name:
             owner = repo_name.split("/")[0]
-            
+
         # Check if it's an external repository
         is_external = bool(owner and owner.lower() != username.lower())
-        
+
         if e_type == "PullRequestEvent":
             action = event.get("payload", {}).get("action")
             if action == "opened":
@@ -387,20 +416,22 @@ def _analyze_collaboration(username: str, events: list[dict[str, Any]]) -> dict[
         elif e_type in ("PushEvent", "IssueCommentEvent", "IssuesEvent"):
             if is_external and repo_name:
                 external_repos.add(repo_name)
-                
+
     ext_list = sorted(list(external_repos))
     summary_parts = []
-    summary_parts.append(f"In recent activity: opened {pr_created} PRs, reviewed {pr_reviewed} PRs.")
+    summary_parts.append(
+        f"In recent activity: opened {pr_created} PRs, reviewed {pr_reviewed} PRs."
+    )
     if ext_list:
         summary_parts.append(f"Contributed to external repositories: {', '.join(ext_list)}.")
     else:
         summary_parts.append("No external repository contributions detected in recent events.")
-        
+
     return {
         "pull_requests_created": pr_created,
         "pull_requests_reviewed": pr_reviewed,
         "external_contributions": ext_list,
-        "summary": " ".join(summary_parts)
+        "summary": " ".join(summary_parts),
     }
 
 
@@ -408,17 +439,17 @@ def _score_path_relevance(path: str, jd_keywords: set[str]) -> float:
     """Score a file path based on its keyword and path relevance to JD."""
     score = 0.0
     path_lower = path.lower()
-    
+
     # Prioritize paths inside common source directories
     if any(x in path_lower for x in {"src/", "app/", "lib/", "pkg/"}):
         score += 5.0
-        
+
     # Split path by delimiters to look for keyword matches
     parts = re.split(r"[/\-_.]", path_lower)
     for part in parts:
         if part in jd_keywords:
             score += 10.0
-            
+
     # Specific common programming patterns / component names matches
     patterns = {
         "auth": 3.0,
@@ -436,7 +467,7 @@ def _score_path_relevance(path: str, jd_keywords: set[str]) -> float:
     for pat, weight in patterns.items():
         if pat in path_lower:
             score += weight
-            
+
     return score
 
 
@@ -444,15 +475,15 @@ def _extract_relevant_snippet(content: str, jd_keywords: set[str], max_chars: in
     """Locate matching JD keywords in content and extract a relevant snippet."""
     if not content:
         return ""
-        
+
     # If content is short, return the whole thing
     if len(content) <= max_chars:
         return content
-        
+
     lines = content.splitlines()
     best_line_idx = -1
     max_matches = 0
-    
+
     # Find the line with the highest number of keyword matches
     for idx, line in enumerate(lines):
         line_lower = line.lower()
@@ -460,7 +491,7 @@ def _extract_relevant_snippet(content: str, jd_keywords: set[str], max_chars: in
         if matches > max_matches:
             max_matches = matches
             best_line_idx = idx
-            
+
     if best_line_idx == -1:
         # If no keyword matches, fallback to the first match of any keyword
         for idx, line in enumerate(lines):
@@ -468,15 +499,15 @@ def _extract_relevant_snippet(content: str, jd_keywords: set[str], max_chars: in
             if any(kw in line_lower for kw in jd_keywords):
                 best_line_idx = idx
                 break
-                
+
     if best_line_idx == -1:
         # Fallback: return the beginning of the file
         return content[:max_chars]
-        
+
     # Center the snippet around the best matching line
     # Try to start up to 3 lines before the matching line
     start_idx = max(0, best_line_idx - 3)
-    
+
     snippet_lines = []
     current_len = 0
     for line in lines[start_idx:]:
@@ -487,19 +518,32 @@ def _extract_relevant_snippet(content: str, jd_keywords: set[str], max_chars: in
             break
         snippet_lines.append(line)
         current_len += len(line) + 1
-        
+
     return "\n".join(snippet_lines)
 
 
 def _parse_dependencies_from_code(path: str, content: str) -> set[str]:
     """Parse imports or require statements to extract used libraries."""
     deps = set()
-    
+
     if path.endswith(".py"):
         # Matches: import package, import package.module, from package import module
         for match in re.finditer(r"^\s*(?:import|from)\s+([a-zA-Z0-9_]+)", content, re.MULTILINE):
             pkg = match.group(1)
-            if pkg not in {"os", "sys", "time", "json", "math", "re", "datetime", "typing", "collections", "hashlib", "shutil", "tempfile"}:
+            if pkg not in {
+                "os",
+                "sys",
+                "time",
+                "json",
+                "math",
+                "re",
+                "datetime",
+                "typing",
+                "collections",
+                "hashlib",
+                "shutil",
+                "tempfile",
+            }:
                 deps.add(pkg)
     elif path.endswith((".js", ".jsx", ".ts", ".tsx")):
         # Matches: import package from 'package', require('package')
@@ -517,7 +561,7 @@ def _parse_dependencies_from_code(path: str, content: str) -> set[str]:
         for m in single_imports:
             pkg = m.group(1).split("/")[-1]
             deps.add(pkg)
-        block_imports = re.search(r'import\s+\((.*?)\)', content, re.DOTALL)
+        block_imports = re.search(r"import\s+\((.*?)\)", content, re.DOTALL)
         if block_imports:
             for line in block_imports.group(1).splitlines():
                 line = line.strip().strip('"')
@@ -531,7 +575,7 @@ def _extract_dependencies_from_manifest(path: str, content: str) -> set[str]:
     """Parse package/dependency manifests (e.g. package.json, pyproject.toml)."""
     deps = set()
     filename = path.split("/")[-1]
-    
+
     try:
         if filename == "package.json":
             data = json.loads(content)
@@ -540,11 +584,11 @@ def _extract_dependencies_from_manifest(path: str, content: str) -> set[str]:
                     deps.update(data[k].keys())
         elif filename == "pyproject.toml":
             # PEP 621 dependencies array
-            matches = re.findall(r'dependencies\s*=\s*\[(.*?)\]', content, re.DOTALL)
+            matches = re.findall(r"dependencies\s*=\s*\[(.*?)\]", content, re.DOTALL)
             for m in matches:
                 for dep in re.findall(r'"([^"]+)"|\'([^\']+)\'', m):
                     dep_name = dep[0] or dep[1]
-                    name_clean = re.split(r'[<>=~!]', dep_name)[0].strip()
+                    name_clean = re.split(r"[<>=~!]", dep_name)[0].strip()
                     if name_clean:
                         deps.add(name_clean)
             # Poetry/Pipenv key-value style under dependency headers
@@ -568,7 +612,7 @@ def _extract_dependencies_from_manifest(path: str, content: str) -> set[str]:
             for line in content.splitlines():
                 line = line.strip()
                 if line and not line.startswith(("#", "-r", "-e")):
-                    name_clean = re.split(r'[<>=~!]', line)[0].strip()
+                    name_clean = re.split(r"[<>=~!]", line)[0].strip()
                     if name_clean:
                         deps.add(name_clean)
         elif filename == "Cargo.toml":
@@ -605,7 +649,7 @@ def _extract_dependencies_from_manifest(path: str, content: str) -> set[str]:
                         deps.add(pkg)
     except Exception as e:
         logger.warning(f"Error parsing manifest {path}: {e}")
-        
+
     return deps
 
 
@@ -617,10 +661,7 @@ class GitHubSummaryResponse(pydantic.BaseModel):
 
 
 async def _generate_coding_style_summary(
-    username: str,
-    repos_data: list[dict[str, Any]],
-    collaboration_summary: str,
-    settings: Any
+    username: str, repos_data: list[dict[str, Any]], collaboration_summary: str, settings: Any
 ) -> tuple[str, str, str, str]:
     """Call the LLM to summarize the candidate's coding style and depth."""
     # Build a compact summary of repos for prompt
@@ -634,43 +675,51 @@ async def _generate_coding_style_summary(
             f"Languages: {r['languages']}\n"
             f"Stars: {r['stars']}\n"
             f"Project Type: {r['project_type']}\n"
-            f"Maturity Signals: has_tests={r['has_tests']}, has_ci={r['has_ci']}, has_docs={r['has_docs']}, has_docker={r['has_docker']}\n"
+            f"Maturity Signals: has_tests={r['has_tests']}, "
+            f"has_ci={r['has_ci']}, has_docs={r['has_docs']}, "
+            f"has_docker={r['has_docker']}\n"
             f"Dependencies: {r['dependency_summary']}\n"
-            f"Commit Frequency: {r['commit_frequency']}, Commit Quality: {r['commit_quality']}, Complexity: {r['complexity_estimate']}\n"
+            f"Commit Frequency: {r['commit_frequency']}, "
+            f"Commit Quality: {r['commit_quality']}, "
+            f"Complexity: {r['complexity_estimate']}\n"
             f"Recent Commits:\n{commits_str}\n"
-            f"Code Samples (excerpts):\n"
-            + "\n---\n".join(r['code_samples'])[:2500]
+            f"Code Samples (excerpts):\n" + "\n---\n".join(r["code_samples"])[:2500]
         )
-        
+
     repos_summary_str = "\n\n====================\n\n".join(repos_summary)
-    
-    prompt = f"""You are an expert technical recruiter and software engineer.
-Evaluate the candidate's GitHub repositories, coding style, code quality, commit hygiene, and collaboration signals.
 
-Candidate Username: {username}
-
-collaboration_summary (calculated from recent events):
-{collaboration_summary}
-
-Candidate Repositories Data:
-{repos_summary_str}
-
-Please generate a professional, objective analysis of the candidate's coding and software engineering practices.
-Format your output as a JSON object matching this schema:
-{{
-  "coding_style_summary": "A concise (2-3 sentences) summary of their coding style, best practices (tests, CI/CD, documentation), framework usage, and structural design.",
-  "collaboration_style": "A concise (1-2 sentences) evaluation of their collaboration style and open-source involvement based on the collaboration summary.",
-  "commit_hygiene": "A concise (1-2 sentences) evaluation of their commit message quality, formatting (e.g. conventional commits), descriptive clarity, and rigor based on their recent commit messages.",
-  "overall_github_signal": "strong" | "moderate" | "weak" | "none"
-}}
-
-Ensure overall_github_signal corresponds to:
-- "strong": Active development, clean structure, tests, CI/CD, documentation, complex logic.
-- "moderate": Good code samples but may lack testing, CI/CD, or recent activity.
-- "weak": Mostly simple scripts, forks without contributions, or low code quality.
-- "none": No code samples or repositories available.
-
-JSON Response:"""
+    prompt = (
+        f"You are an expert technical recruiter and software engineer.\n"
+        f"Evaluate the candidate's GitHub repositories, coding style, "
+        f"code quality, commit hygiene, and collaboration signals.\n\n"
+        f"Candidate Username: {username}\n\n"
+        f"collaboration_summary (calculated from recent events):\n"
+        f"{collaboration_summary}\n\n"
+        f"Candidate Repositories Data:\n"
+        f"{repos_summary_str}\n\n"
+        f"Please generate a professional, objective analysis of the candidate's coding and "
+        f"software engineering practices.\n"
+        f"Format your output as a JSON object matching this schema:\n"
+        f"{{\n"
+        f"  \"coding_style_summary\": \"A concise (2-3 sentences) summary of their "
+        f"coding style, best practices (tests, CI/CD, documentation), framework usage, "
+        f"and structural design.\",\n"
+        f"  \"collaboration_style\": \"A concise (1-2 sentences) evaluation of their "
+        f"collaboration style and open-source involvement based on the "
+        f"collaboration summary.\",\n"
+        f"  \"commit_hygiene\": \"A concise (1-2 sentences) evaluation of their commit "
+        f"message quality, formatting (e.g. conventional commits), descriptive clarity, "
+        f"and rigor based on their recent commit messages.\",\n"
+        f"  \"overall_github_signal\": \"strong\" | \"moderate\" | \"weak\" | \"none\"\n"
+        f"}}\n\n"
+        f"Ensure overall_github_signal corresponds to:\n"
+        f"- \"strong\": Active development, clean structure, tests, CI/CD, documentation, "
+        f"complex logic.\n"
+        f"- \"moderate\": Good code samples but may lack testing, CI/CD, or recent activity.\n"
+        f"- \"weak\": Mostly simple scripts, forks without contributions, or low code quality.\n"
+        f"- \"none\": No code samples or repositories available.\n\n"
+        f"JSON Response:"
+    )
 
     provider = settings.llm_provider
     if provider == "auto":
@@ -681,8 +730,9 @@ JSON Response:"""
             import litellm
 
             from agent.llm_client import OPENROUTER_API_BASE, openrouter_model_id
+
             model = openrouter_model_id(settings)
-            
+
             response = litellm.completion(
                 model=model,
                 messages=[{"role": "user", "content": prompt}],
@@ -696,17 +746,25 @@ JSON Response:"""
                             "type": "object",
                             "properties": {
                                 "coding_style_summary": {"type": "string"},
-                                "overall_github_signal": {"type": "string", "enum": ["strong", "moderate", "weak", "none"]},
+                                "overall_github_signal": {
+                                    "type": "string",
+                                    "enum": ["strong", "moderate", "weak", "none"],
+                                },
                                 "collaboration_style": {"type": "string"},
-                                "commit_hygiene": {"type": "string"}
+                                "commit_hygiene": {"type": "string"},
                             },
-                            "required": ["coding_style_summary", "overall_github_signal", "collaboration_style", "commit_hygiene"]
+                            "required": [
+                                "coding_style_summary",
+                                "overall_github_signal",
+                                "collaboration_style",
+                                "commit_hygiene",
+                            ],
                         },
-                        "strict": True
-                    }
+                        "strict": True,
+                    },
                 },
                 temperature=0.1,
-                max_tokens=1000
+                max_tokens=1000,
             )
             text = response.choices[0].message.content or ""
             data = json.loads(text)
@@ -714,7 +772,7 @@ JSON Response:"""
                 data.get("coding_style_summary", ""),
                 data.get("overall_github_signal", "none"),
                 data.get("collaboration_style", ""),
-                data.get("commit_hygiene", "")
+                data.get("commit_hygiene", ""),
             )
         else:
             import time
@@ -722,12 +780,12 @@ JSON Response:"""
             from google import genai
             from google.genai import types
             from google.genai.errors import APIError, ServerError
-            
+
             client = genai.Client(api_key=settings.gemini_api_key)
             max_retries = 3
             delay = 1.5
             response = None
-            
+
             for attempt in range(max_retries):
                 try:
                     response = client.models.generate_content(
@@ -737,15 +795,18 @@ JSON Response:"""
                             response_mime_type="application/json",
                             response_json_schema=GitHubSummaryResponse.model_json_schema(),
                             temperature=0.1,
-                            max_output_tokens=1000
-                        )
+                            max_output_tokens=1000,
+                        ),
                     )
                     break
                 except (APIError, ServerError) as e:
                     status_code = getattr(e, "code", getattr(e, "status_code", None))
-                    if (status_code in (503, 429) or "503" in str(e) or "429" in str(e)) and attempt < max_retries - 1:
+                    if (
+                        status_code in (503, 429) or "503" in str(e) or "429" in str(e)
+                    ) and attempt < max_retries - 1:
                         logger.warning(
-                            f"Gemini API returned transient error during GitHub summary (attempt {attempt + 1}/{max_retries}). "
+                            f"Gemini API returned transient error during GitHub summary "
+                            f"(attempt {attempt + 1}/{max_retries}). "
                             f"Retrying in {delay}s... Error: {e}"
                         )
                         time.sleep(delay)
@@ -761,17 +822,27 @@ JSON Response:"""
                 data.get("coding_style_summary", ""),
                 data.get("overall_github_signal", "none"),
                 data.get("collaboration_style", ""),
-                data.get("commit_hygiene", "")
+                data.get("commit_hygiene", ""),
             )
-            
+
     except Exception as e:
         logger.error(f"Failed to generate coding style summary via LLM: {e}")
         # Return fallback heuristic summary
         langs = set()
         for r in repos_data:
             langs.update(r["languages"].keys())
-        summary = f"Candidate has repositories in {', '.join(langs)}. Repos show projects like {', '.join(r['name'] for r in repos_data)}."
-        return summary, "moderate" if repos_data else "none", collaboration_summary, "Commit messages analyzed heuristically."
+        summary_langs = ", ".join(langs)
+        summary_repos = ", ".join(r["name"] for r in repos_data)
+        summary = (
+            f"Candidate has repositories in {summary_langs}. "
+            f"Repos show projects like {summary_repos}."
+        )
+        return (
+            summary,
+            "moderate" if repos_data else "none",
+            collaboration_summary,
+            "Commit messages analyzed heuristically.",
+        )
 
 
 def _generate_coding_style_summary_heuristic(
@@ -779,7 +850,9 @@ def _generate_coding_style_summary_heuristic(
     repos_data: list[dict[str, Any]],
     collaboration_summary: str,
 ) -> tuple[str, str, str, str]:
-    """Generate a heuristic summary of the candidate's coding style and depth without an LLM call."""
+    """Generate a heuristic summary of the candidate's coding style and depth
+    without an LLM call.
+    """
     if not repos_data:
         return (
             f"No public repositories analyzed for GitHub user {username}.",
@@ -798,13 +871,13 @@ def _generate_coding_style_summary_heuristic(
     coding_style_summary = (
         f"Candidate is active in {lang_str} across repositories including {', '.join(repo_names)}. "
     )
-    
+
     # Check for engineering maturity indicators
     has_tests = any(r.get("has_tests") for r in repos_data)
     has_ci = any(r.get("has_ci") for r in repos_data)
     has_docs = any(r.get("has_docs") for r in repos_data)
     has_docker = any(r.get("has_docker") for r in repos_data)
-    
+
     maturity_signals = []
     if has_tests:
         maturity_signals.append("testing")
@@ -814,11 +887,13 @@ def _generate_coding_style_summary_heuristic(
         maturity_signals.append("documentation")
     if has_docker:
         maturity_signals.append("containerization")
-        
+
     if maturity_signals:
         coding_style_summary += f"Codebases show evidence of {', '.join(maturity_signals)}."
     else:
-        coding_style_summary += "Codebases contain source files without explicit tests or CI configurations."
+        coding_style_summary += (
+            "Codebases contain source files without explicit tests or CI configurations."
+        )
 
     # Determine overall signal
     overall_github_signal = "weak"
@@ -826,8 +901,12 @@ def _generate_coding_style_summary_heuristic(
         overall_github_signal = "moderate"
         # If they have tests/CI or highly-starred repositories or multiple complex repos
         high_quality_repos = sum(
-            1 for r in repos_data
-            if r.get("has_tests") or r.get("has_ci") or r.get("stars", 0) >= 5 or r.get("complexity_estimate") == "complex"
+            1
+            for r in repos_data
+            if r.get("has_tests")
+            or r.get("has_ci")
+            or r.get("stars", 0) >= 5
+            or r.get("complexity_estimate") == "complex"
         )
         if high_quality_repos >= 1:
             overall_github_signal = "strong"
@@ -877,19 +956,19 @@ async def _analyze_single_repo(
     # Determine signals from paths
     file_paths = [entry.path for entry in tree]
     has_tests = any(
-        "test" in p.lower() or p.endswith(("_test.py", ".test.js", ".test.ts", "Spec.scala", "Test.java"))
+        "test" in p.lower()
+        or p.endswith(("_test.py", ".test.js", ".test.ts", "Spec.scala", "Test.java"))
         for p in file_paths
     )
     has_ci = any(
-        p.startswith(".github/workflows/") or p.endswith((".gitlab-ci.yml", "travis.yml", "circle.yml"))
+        p.startswith(".github/workflows/")
+        or p.endswith((".gitlab-ci.yml", "travis.yml", "circle.yml"))
         for p in file_paths
     )
-    has_docs = any(
-        "doc" in p.lower() or p.endswith((".md", ".rst", ".txt"))
-        for p in file_paths
-    )
+    has_docs = any("doc" in p.lower() or p.endswith((".md", ".rst", ".txt")) for p in file_paths)
     has_docker = any(
-        "docker" in p.lower() or p.endswith(("Dockerfile", "docker-compose.yml", "docker-compose.yaml"))
+        "docker" in p.lower()
+        or p.endswith(("Dockerfile", "docker-compose.yml", "docker-compose.yaml"))
         for p in file_paths
     )
 
@@ -908,7 +987,10 @@ async def _analyze_single_repo(
         project_type = "dockerized-app"
     elif any("components" in p.lower() or "views" in p.lower() for p in file_paths):
         project_type = "web-app"
-    elif any(p.endswith(("setup.py", "pyproject.toml", "Cargo.toml", "go.mod", "pom.xml")) for p in file_paths):
+    elif any(
+        p.endswith(("setup.py", "pyproject.toml", "Cargo.toml", "go.mod", "pom.xml"))
+        for p in file_paths
+    ):
         project_type = "library"
     elif code_file_count > 0:
         project_type = "codebase"
@@ -919,6 +1001,7 @@ async def _analyze_single_repo(
 
     if commits:
         from datetime import datetime
+
         try:
             latest_date_str = commits[0].date.replace("Z", "")
             latest_date = datetime.fromisoformat(latest_date_str)
@@ -932,8 +1015,11 @@ async def _analyze_single_repo(
 
         messages = [c.message.lower() for c in commits]
         generic_count = sum(
-            1 for m in messages
-            if any(x in m for x in {"update", "fix", "wip", "commit", "temp", "test", "add", "remove"})
+            1
+            for m in messages
+            if any(
+                x in m for x in {"update", "fix", "wip", "commit", "temp", "test", "add", "remove"}
+            )
             and len(m.strip()) < 10
         )
         if generic_count > 7:
@@ -965,15 +1051,18 @@ async def _analyze_single_repo(
     # Add important source files, scored by relevance to JD keywords
     source_candidates = []
     for path in file_paths:
-        if "test" in path.lower() or "doc" in path.lower() or path.split("/")[-1].lower() in manifest_files:
+        if (
+            "test" in path.lower()
+            or "doc" in path.lower()
+            or path.split("/")[-1].lower() in manifest_files
+        ):
             continue
         ext = "." + path.split(".")[-1] if "." in path else ""
         if ext in LANG_EXTENSIONS and ext not in {".yml", ".yaml", ".sh"}:
             source_candidates.append(path)
 
     scored_sources = [
-        (path, _score_path_relevance(path, jd_keywords))
-        for path in source_candidates
+        (path, _score_path_relevance(path, jd_keywords)) for path in source_candidates
     ]
     scored_sources.sort(key=lambda x: x[1], reverse=True)
     top_sources = [path for path, score in scored_sources[:3]]
@@ -984,7 +1073,7 @@ async def _analyze_single_repo(
     repo_deps: set[str] = set()
     code_samples: list[str] = []
 
-    for path in candidate_files[:settings.max_files_per_repo]:
+    for path in candidate_files[: settings.max_files_per_repo]:
         content = await client.get_file_content(repo.owner, repo.name, path)
         if not content:
             continue
@@ -1007,7 +1096,7 @@ async def _analyze_single_repo(
             code_samples.append(formatted_snippet)
             remaining_char_budget_container[0] -= len(formatted_snippet)
         elif is_readme and remaining > 200:
-            snippet = content[:min(1000, remaining - 100)]
+            snippet = content[: min(1000, remaining - 100)]
             formatted_snippet = f"README Preview:\n{snippet}"
             code_samples.append(formatted_snippet)
             remaining_char_budget_container[0] -= len(formatted_snippet)
@@ -1043,9 +1132,7 @@ async def _analyze_single_repo(
 
 
 async def analyze_github_repos(
-    username: str,
-    repo_urls: list[str] | None = None,
-    jd_structured: dict[str, Any] | None = None
+    username: str, repo_urls: list[str] | None = None, jd_structured: dict[str, Any] | None = None
 ) -> dict[str, Any]:
     """Fetch and deeply analyze a candidate's GitHub repositories.
 
@@ -1120,9 +1207,7 @@ async def analyze_github_repos(
 
         # Rank all repos
         jd_keywords = _get_jd_keywords(jd_structured)
-        repos_with_scores = [
-            (repo, _score_repo_relevance(repo, jd_keywords)) for repo in all_repos
-        ]
+        repos_with_scores = [(repo, _score_repo_relevance(repo, jd_keywords)) for repo in all_repos]
         repos_with_scores.sort(key=lambda x: (x[1], x[0].stars, x[0].updated_at), reverse=True)
 
         ranked_repos = [repo for repo, score in repos_with_scores]
@@ -1153,18 +1238,18 @@ async def analyze_github_repos(
         # Shared mutable budget container (soft cap, minor race is acceptable)
         remaining_char_budget = [settings.github_content_token_cap]
 
-        repo_analyses_list: list[RepoAnalysis] = list(await asyncio.gather(
-            *[
-                _analyze_single_repo(repo, client, jd_keywords, settings, remaining_char_budget)
-                for repo in selected_repos
-            ]
-        ))
+        repo_analyses_list: list[RepoAnalysis] = list(
+            await asyncio.gather(
+                *[
+                    _analyze_single_repo(repo, client, jd_keywords, settings, remaining_char_budget)
+                    for repo in selected_repos
+                ]
+            )
+        )
 
         # 4. Generate coding style summary and sandbox reports in parallel when possible.
         repos_dict_list = [asdict(r) for r in repo_analyses_list]
-        sandbox_task = asyncio.create_task(
-            _evaluate_sandbox_repos(selected_sandbox_urls, settings)
-        )
+        sandbox_task = asyncio.create_task(_evaluate_sandbox_repos(selected_sandbox_urls, settings))
         if settings.github_llm_summary_enabled:
             summary_task = asyncio.create_task(
                 _generate_coding_style_summary(
@@ -1176,8 +1261,10 @@ async def analyze_github_repos(
                 summary_result
             )
         else:
-            coding_style_summary, overall_github_signal, collaboration_style, commit_hygiene = _generate_coding_style_summary_heuristic(
-                username, repos_dict_list, collab_data["summary"]
+            coding_style_summary, overall_github_signal, collaboration_style, commit_hygiene = (
+                _generate_coding_style_summary_heuristic(
+                    username, repos_dict_list, collab_data["summary"]
+                )
             )
             sandbox_reports = await sandbox_task
 
@@ -1196,9 +1283,7 @@ async def analyze_github_repos(
             selected_sandbox_repo_urls=selected_sandbox_urls,
             sandbox_reports=sandbox_reports,
             repo_selection_mode=(
-                sandbox_selection_mode
-                if settings.github_clone_analysis_enabled
-                else selection_mode
+                sandbox_selection_mode if settings.github_clone_analysis_enabled else selection_mode
             ),
         )
     )

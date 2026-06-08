@@ -24,8 +24,4 @@ def sanitize_external_content(text: str, url: str, *, max_chars: int = 8000) -> 
     if len(cleaned) > max_chars:
         cleaned = cleaned[:max_chars] + "…"
 
-    return (
-        f"===BEGIN EXTERNAL CONTENT: {url}===\n"
-        f"{cleaned}\n"
-        f"===END EXTERNAL CONTENT==="
-    )
+    return f"===BEGIN EXTERNAL CONTENT: {url}===\n{cleaned}\n===END EXTERNAL CONTENT==="

@@ -27,13 +27,17 @@ def test_sync_gemini_env_from_dotenv(
     assert os.environ.get("GOOGLE_API_KEY") == "from-dotenv-key"
 
 
-def test_jd_parse_use_llm_defaults_false(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_jd_parse_use_llm_defaults_false(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("JD_PARSE_USE_LLM", raising=False)
     get_settings.cache_clear()
     assert get_settings().jd_parse_use_llm is False
 
 
-def test_sandbox_config_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_sandbox_config_defaults(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("GITHUB_CLONE_ANALYSIS_ENABLED", raising=False)
     monkeypatch.delenv("SANDBOX_PROVIDER", raising=False)
     monkeypatch.delenv("SANDBOX_MAX_REPOS", raising=False)
@@ -57,7 +61,10 @@ def test_sandbox_config_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     assert settings.sandbox_report_prefix == "sandbox-reports"
 
 
-def test_sandbox_config_normalizes_literals(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_sandbox_config_normalizes_literals(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("SANDBOX_PROVIDER", " CLOUD_RUN ")
     monkeypatch.setenv("SANDBOX_NETWORK_MODE", " INSTALL_ONLY ")
     get_settings.cache_clear()

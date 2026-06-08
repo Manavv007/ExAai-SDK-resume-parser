@@ -94,7 +94,7 @@ def _try_repair_json(text: str) -> dict[str, Any] | None:
         return None
     fragment = text[start:]
     # Close truncated string + object/array brackets
-    fragment = re.sub(r',\s*$', '', fragment.rstrip())
+    fragment = re.sub(r",\s*$", "", fragment.rstrip())
     if fragment.count('"') % 2 == 1:
         fragment += '"'
     open_braces = fragment.count("{") - fragment.count("}")
@@ -153,17 +153,16 @@ def _build_scoring_prompt(
                 f"- Repo: {r.get('name')} ({r.get('url')})\n"
                 f"  Languages: {r.get('languages')}\n"
                 f"  Stars: {r.get('stars')}, Type: {r.get('project_type')}\n"
-                f"  Maturity: tests={r.get('has_tests')}, ci={r.get('has_ci')}, docs={r.get('has_docs')}, docker={r.get('has_docker')}\n"
+                f"  Maturity: tests={r.get('has_tests')}, ci={r.get('has_ci')}, "
+                f"docs={r.get('has_docs')}, docker={r.get('has_docker')}\n"
                 f"  Dependencies: {r.get('dependency_summary')}\n"
-                f"  Commit Frequency: {r.get('commit_frequency')}, Commit Quality: {r.get('commit_quality')}, Complexity: {r.get('complexity_estimate')}"
+                f"  Commit Frequency: {r.get('commit_frequency')}, "
+                f"Commit Quality: {r.get('commit_quality')}, "
+                f"Complexity: {r.get('complexity_estimate')}"
             )
         repos_str = "\n".join(repos_summary)
         sandbox_reports = github_repo_analyses.get("sandbox_reports") or []
-        sandbox_str = (
-            json.dumps(sandbox_reports, indent=2)[:4000]
-            if sandbox_reports
-            else "(none)"
-        )
+        sandbox_str = json.dumps(sandbox_reports, indent=2)[:4000] if sandbox_reports else "(none)"
         github_block = (
             f"GITHUB REPOSITORY ANALYSIS:\n"
             f"Username: {github_repo_analyses.get('username')}\n"
@@ -324,8 +323,7 @@ def normalize_screening_result(
         "requirement_matches": requirement_matches,
         "recommendation": recommendation,
         "recommendation_reasoning": (
-            str(raw.get("recommendation_reasoning") or "").strip()
-            or reasoning
+            str(raw.get("recommendation_reasoning") or "").strip() or reasoning
         )[:2000],
         "red_flags": merge_identity_red_flags(
             sanitize_red_flags(raw.get("red_flags")),

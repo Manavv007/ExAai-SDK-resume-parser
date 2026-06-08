@@ -98,9 +98,7 @@ ALLOWLIST_BY_CATEGORY: dict[str, tuple[str, ...]] = {
 }
 
 _SUFFIX_TO_CATEGORY: dict[str, str] = {
-    suffix: category
-    for category, suffixes in ALLOWLIST_BY_CATEGORY.items()
-    for suffix in suffixes
+    suffix: category for category, suffixes in ALLOWLIST_BY_CATEGORY.items() for suffix in suffixes
 }
 
 ALLOWED_SUFFIXES: frozenset[str] = frozenset(_SUFFIX_TO_CATEGORY.keys())
