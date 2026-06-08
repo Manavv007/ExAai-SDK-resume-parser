@@ -49,9 +49,12 @@ class Settings(BaseSettings):
     max_files_per_repo: int = 15
     github_content_token_cap: int = 12000
     github_api_timeout_seconds: int = 10
-    github_clone_analysis_enabled: bool = Field(
-        default=False,
-        description="Clone selected GitHub repositories and evaluate them in a sandbox.",
+    github_clone_analysis_enabled: bool | str = Field(
+        default="auto",
+        description=(
+            "Clone selected GitHub repositories and evaluate them in a sandbox. "
+            "Supports True, False, or 'auto' for dynamic hybrid evaluation."
+        ),
     )
     sandbox_provider: SandboxProvider = Field(
         default="cloud_run",
@@ -62,7 +65,7 @@ class Settings(BaseSettings):
         description="Legacy max selected repositories to clone/evaluate per candidate.",
     )
     sandbox_max_resume_repos: int = Field(
-        default=5,
+        default=2,
         description="Max resume-mentioned GitHub repositories to sandbox/evaluate.",
     )
     sandbox_max_profile_repos: int = Field(

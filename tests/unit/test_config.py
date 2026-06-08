@@ -47,10 +47,10 @@ def test_sandbox_config_defaults(monkeypatch: pytest.MonkeyPatch, tmp_path) -> N
 
     settings = get_settings()
 
-    assert settings.github_clone_analysis_enabled is False
+    assert settings.github_clone_analysis_enabled == "auto"
     assert settings.sandbox_provider == "cloud_run"
     assert settings.sandbox_max_repos == 2
-    assert settings.sandbox_max_resume_repos == 5
+    assert settings.sandbox_max_resume_repos == 2
     assert settings.sandbox_max_profile_repos == 2
     assert settings.sandbox_timeout_seconds == 300
     assert settings.sandbox_wait_seconds == 45

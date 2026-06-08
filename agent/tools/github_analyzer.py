@@ -1247,16 +1247,62 @@ async def analyze_github_repos(
             )
         )
 
-        # 4. Generate coding style summary and sandbox reports in parallel when possible.
         repos_dict_list = [asdict(r) for r in repo_analyses_list]
-        sandbox_task = asyncio.create_task(_evaluate_sandbox_repos(selected_sandbox_urls, settings))
+
+        # Determine whether we should run the sandbox dynamically (auto/hybrid mode)
+        run_sandbox = False
+        enabled_val = getattr(settings, "github_clone_analysis_enabled", False)
+        if isinstance(enabled_val, bool):
+            run_sandbox = enabled_val
+        elif str(enabled_val).lower() in ("auto", "hybrid"):
+            # Dynamic hybrid rules
+            if resume_repo_urls:
+                logger.info(
+                    "Hybrid Sandbox: Enabled because candidate's resume "
+                    "emphasizes specific projects."
+                )
+                run_sandbox = True
+            elif jd_structured and any(
+                word in str(jd_structured.get("job_title") or "").lower()
+                for word in ["senior", "lead", "staff", "principal", "architect", "sr."]
+            ):
+                logger.info(
+                    "Hybrid Sandbox: Enabled because screening is for a senior/lead role."
+                )
+                run_sandbox = True
+            else:
+                _, static_signal, _, _ = _generate_coding_style_summary_heuristic(
+                    username, repos_dict_list, collab_data["summary"]
+                )
+                if static_signal == "moderate":
+                    logger.info(
+                        "Hybrid Sandbox: Enabled because static API signal is 'moderate' and "
+                        "sandbox execution could elevate it."
+                    )
+                    run_sandbox = True
+                else:
+                    logger.info(
+                        "Hybrid Sandbox: Disabled (static API signal is sufficient/no senior or "
+                        "specific resume project cues)."
+                    )
+
+        if run_sandbox and selected_sandbox_urls:
+            sandbox_task = asyncio.create_task(
+                _evaluate_sandbox_repos(selected_sandbox_urls, settings)
+            )
+        else:
+            sandbox_task = None
+
         if settings.github_llm_summary_enabled:
             summary_task = asyncio.create_task(
                 _generate_coding_style_summary(
                     username, repos_dict_list, collab_data["summary"], settings
                 )
             )
-            sandbox_reports, summary_result = await asyncio.gather(sandbox_task, summary_task)
+            if sandbox_task:
+                sandbox_reports, summary_result = await asyncio.gather(sandbox_task, summary_task)
+            else:
+                sandbox_reports, summary_result = [], await summary_task
             coding_style_summary, overall_github_signal, collaboration_style, commit_hygiene = (
                 summary_result
             )
@@ -1266,7 +1312,10 @@ async def analyze_github_repos(
                     username, repos_dict_list, collab_data["summary"]
                 )
             )
-            sandbox_reports = await sandbox_task
+            if sandbox_task:
+                sandbox_reports = await sandbox_task
+            else:
+                sandbox_reports = []
 
     return asdict(
         GitHubAnalysis(
@@ -1280,10 +1329,10 @@ async def analyze_github_repos(
             collaboration_summary=collaboration_style,
             commit_hygiene=commit_hygiene,
             resume_github_repo_urls=resume_repo_urls,
-            selected_sandbox_repo_urls=selected_sandbox_urls,
+            selected_sandbox_repo_urls=selected_sandbox_urls if run_sandbox else [],
             sandbox_reports=sandbox_reports,
             repo_selection_mode=(
-                sandbox_selection_mode if settings.github_clone_analysis_enabled else selection_mode
+                sandbox_selection_mode if run_sandbox else selection_mode
             ),
         )
     )
