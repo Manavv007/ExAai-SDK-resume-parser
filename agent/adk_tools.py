@@ -86,3 +86,49 @@ def submit_screening_result(
     if outcome.get("ok"):
         tool_context.state["screening_result"] = outcome["screening_result"]
     return outcome
+
+
+async def analyze_github(tool_context: ToolContext) -> dict[str, Any]:
+    """
+    Analyze the candidate's GitHub repositories for coding style and technical depth.
+
+    This will read structure, languages, dependencies, and commit patterns of key public
+    repos. The resulting analysis is saved in the session and used in final scoring.
+    """
+    github_username = tool_context.state.get("github_username")
+    if not github_username:
+        return {
+            "ok": False,
+            "error": "no_github_profile",
+            "message": "No public GitHub profile was found in the candidate's profile list.",
+        }
+
+    github_repo_analyses = tool_context.state.get("github_repo_analyses")
+    if github_repo_analyses and github_repo_analyses.get("repo_analyses"):
+        return {
+            "ok": True,
+            "username": github_username,
+            "message": "GitHub repository analysis is already complete and stored in the session.",
+            "overall_github_signal": github_repo_analyses.get("overall_github_signal"),
+            "coding_style_summary": github_repo_analyses.get("coding_style_summary"),
+        }
+
+    from agent.tools.github_analyzer import analyze_github_repos
+    try:
+        profile_urls = tool_context.state.get("profile_urls") or []
+        jd_structured = tool_context.state.get("jd_structured") or {}
+        analysis = await analyze_github_repos(github_username, profile_urls, jd_structured)
+        tool_context.state["github_repo_analyses"] = analysis
+        return {
+            "ok": True,
+            "username": github_username,
+            "message": "GitHub repository analysis completed successfully.",
+            "overall_github_signal": analysis.get("overall_github_signal"),
+            "coding_style_summary": analysis.get("coding_style_summary"),
+        }
+    except Exception as e:
+        return {
+            "ok": False,
+            "error": "analysis_failed",
+            "message": f"Deep GitHub analysis failed: {e}",
+        }

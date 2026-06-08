@@ -302,20 +302,44 @@ def generate_json(prompt: str, *, correction: str | None = None) -> dict[str, An
 
     from google import genai
     from google.genai import types
+    from google.genai.errors import APIError, ServerError
+    import time
 
     if not settings.gemini_api_key.strip():
         raise RuntimeError("GEMINI_API_KEY is not configured")
 
-    increment_llm_call_count(model=settings.gemini_model_id, source="scorer")
     client = genai.Client(api_key=settings.gemini_api_key)
-    response = client.models.generate_content(
-        model=settings.gemini_model_id,
-        contents=contents,
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json",
-            response_json_schema=_scoring_response_schema(),
-            max_output_tokens=8192,
-            temperature=0.1,
-        ),
-    )
+    
+    max_retries = 3
+    delay = 1.5
+    response = None
+    
+    for attempt in range(max_retries):
+        try:
+            increment_llm_call_count(model=settings.gemini_model_id, source="scorer")
+            response = client.models.generate_content(
+                model=settings.gemini_model_id,
+                contents=contents,
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    response_json_schema=_scoring_response_schema(),
+                    max_output_tokens=8192,
+                    temperature=0.1,
+                ),
+            )
+            break
+        except (APIError, ServerError) as e:
+            status_code = getattr(e, "code", getattr(e, "status_code", None))
+            if (status_code in (503, 429) or "503" in str(e) or "429" in str(e)) and attempt < max_retries - 1:
+                logger.warning(
+                    f"Gemini API returned transient error (attempt {attempt + 1}/{max_retries}). "
+                    f"Retrying in {delay}s... Error: {e}"
+                )
+                time.sleep(delay)
+                delay *= 2.0
+            else:
+                raise
+
+    if response is None:
+        raise RuntimeError("Gemini call failed with no response")
     return _parse_json_response(response.text or "")

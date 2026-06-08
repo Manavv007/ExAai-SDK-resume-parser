@@ -15,7 +15,10 @@ def _test_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("API_KEYS", os.environ.get("API_KEYS", "test-key"))
     monkeypatch.setenv("LLM_PROVIDER", os.environ.get("LLM_PROVIDER", "gemini"))
     get_settings.cache_clear()
+    from agent.tools.github_client import GitHubClient
+    GitHubClient._rate_limit_reset_time = 0.0
     yield
+    GitHubClient._rate_limit_reset_time = 0.0
     get_settings.cache_clear()
 
 

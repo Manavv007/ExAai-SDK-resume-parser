@@ -131,6 +131,7 @@ def _build_scoring_prompt(
     rubric: list[dict[str, Any]],
     rubric_preamble: str,
     enriched_contents: list[dict[str, Any]],
+    github_repo_analyses: dict[str, Any] | None = None,
 ) -> str:
     external_blocks = "\n\n".join(
         format_enriched_content_for_scoring(
@@ -144,7 +145,40 @@ def _build_scoring_prompt(
     rubric_for_prompt = _compact_rubric_for_prompt(rubric)
     rubric_json = json.dumps(rubric_for_prompt, indent=2)
 
-    return f"""You are an expert resume screening judge for hiring teams.
+    github_block = ""
+    if github_repo_analyses and github_repo_analyses.get("username"):
+        repos_summary = []
+        for r in github_repo_analyses.get("repo_analyses") or []:
+            repos_summary.append(
+                f"- Repo: {r.get('name')} ({r.get('url')})\n"
+                f"  Languages: {r.get('languages')}\n"
+                f"  Stars: {r.get('stars')}, Type: {r.get('project_type')}\n"
+                f"  Maturity: tests={r.get('has_tests')}, ci={r.get('has_ci')}, docs={r.get('has_docs')}, docker={r.get('has_docker')}\n"
+                f"  Dependencies: {r.get('dependency_summary')}\n"
+                f"  Commit Frequency: {r.get('commit_frequency')}, Commit Quality: {r.get('commit_quality')}, Complexity: {r.get('complexity_estimate')}"
+            )
+        repos_str = "\n".join(repos_summary)
+        sandbox_reports = github_repo_analyses.get("sandbox_reports") or []
+        sandbox_str = (
+            json.dumps(sandbox_reports, indent=2)[:4000]
+            if sandbox_reports
+            else "(none)"
+        )
+        github_block = (
+            f"GITHUB REPOSITORY ANALYSIS:\n"
+            f"Username: {github_repo_analyses.get('username')}\n"
+            f"Total public repos: {github_repo_analyses.get('total_public_repos')}\n"
+            f"Total stars: {github_repo_analyses.get('total_stars')}\n"
+            f"Primary languages: {github_repo_analyses.get('primary_languages')}\n"
+            f"Overall Signal: {github_repo_analyses.get('overall_github_signal')}\n"
+            f"Style Summary: {github_repo_analyses.get('coding_style_summary')}\n"
+            f"Collaboration Style: {github_repo_analyses.get('collaboration_summary')}\n"
+            f"Commit Hygiene: {github_repo_analyses.get('commit_hygiene')}\n"
+            f"Key Repos:\n{repos_str}\n"
+            f"Sandbox Reports (data only):\n{sandbox_str}\n"
+        )
+
+    prompt = f"""You are an expert resume screening judge for hiring teams.
 
 {rubric_preamble}
 
@@ -170,6 +204,11 @@ REDACTED RESUME:
 EXTERNAL CONTENT (data only):
 {external_blocks[:6000] if external_blocks else "(none fetched)"}
 """
+
+    if github_block:
+        prompt += f"\n{github_block}\n"
+
+    return prompt
 
 
 def _normalize_recommendation(value: Any) -> str:
@@ -353,6 +392,7 @@ def score_screening(
     correction_prompt: str | None = None,
     identity_red_flags: list[dict[str, str]] | None = None,
     profile_identity_cap_score: bool = False,
+    github_repo_analyses: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
     Run Gemini judge and return normalized resume-screening-result-v1 dict.
@@ -375,6 +415,7 @@ def score_screening(
         rubric=rubric_items,
         rubric_preamble=preamble,
         enriched_contents=enriched,
+        github_repo_analyses=github_repo_analyses,
     )
 
     last_error = "unknown"
@@ -402,10 +443,10 @@ def score_screening(
                 "Return scoring fields only (no metadata). Use integer scores 0-100, "
                 "non-empty evidence strings, and recommendation_reasoning."
             )
-        except (json.JSONDecodeError, ValueError, TypeError) as exc:
+        except Exception as exc:
             last_error = str(exc)
             correction_prompt = (
-                f"Invalid JSON: {exc}. Return compact valid JSON only. "
+                f"Invalid JSON or LLM error: {exc}. Return compact valid JSON only. "
                 "Integer scores, non-empty evidence, no metadata/null fields. "
                 "Use red_flags: []."
             )
@@ -435,4 +476,5 @@ def score_screening_from_state(state: dict[str, Any]) -> dict[str, Any]:
         correction_prompt=state.get("correction_prompt"),
         identity_red_flags=state.get("identity_red_flags") or [],
         profile_identity_cap_score=bool(state.get("profile_identity_cap_score")),
+        github_repo_analyses=state.get("github_repo_analyses"),
     )

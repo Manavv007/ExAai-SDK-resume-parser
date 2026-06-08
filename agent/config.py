@@ -7,6 +7,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ScreeningMode = Literal["pipeline", "agent"]
 LlmProvider = Literal["gemini", "openrouter", "auto"]
+SandboxProvider = Literal["cloud_run", "docker", "e2b", "upstash_box"]
+SandboxNetworkMode = Literal["none", "install_only", "always"]
 
 
 class Settings(BaseSettings):
@@ -40,6 +42,57 @@ class Settings(BaseSettings):
         description="Max ADK LLM turns when using OpenRouter free models (each turn = 1 API call)",
     )
     exa_api_key: str = ""
+    github_token: str = ""
+    github_analysis_enabled: bool = True
+    github_llm_summary_enabled: bool = False
+    max_repos_to_analyze: int = 3
+    max_files_per_repo: int = 15
+    github_content_token_cap: int = 12000
+    github_api_timeout_seconds: int = 10
+    github_clone_analysis_enabled: bool = Field(
+        default=False,
+        description="Clone selected GitHub repositories and evaluate them in a sandbox.",
+    )
+    sandbox_provider: SandboxProvider = Field(
+        default="cloud_run",
+        description="Sandbox backend for repository execution analysis.",
+    )
+    sandbox_max_repos: int = Field(
+        default=2,
+        description="Legacy max selected repositories to clone/evaluate per candidate.",
+    )
+    sandbox_max_resume_repos: int = Field(
+        default=5,
+        description="Max resume-mentioned GitHub repositories to sandbox/evaluate.",
+    )
+    sandbox_max_profile_repos: int = Field(
+        default=2,
+        description="Max ranked public profile repositories to sandbox/evaluate as fallback.",
+    )
+    sandbox_timeout_seconds: int = Field(
+        default=300,
+        description="Wall-clock timeout for one repository sandbox evaluation.",
+    )
+    sandbox_wait_seconds: float = Field(
+        default=45.0,
+        description="Max seconds the screening flow waits for sandbox reports.",
+    )
+    sandbox_poll_interval_seconds: float = Field(
+        default=2.0,
+        description="Polling interval for Cloud Run sandbox job operations.",
+    )
+    sandbox_network_mode: SandboxNetworkMode = Field(
+        default="install_only",
+        description=(
+            "none: no network; install_only: network for dependency install only; "
+            "always: allow network."
+        ),
+    )
+    gcp_project_id: str = ""
+    gcp_region: str = "asia-south1"
+    cloud_run_sandbox_job_name: str = "repo-evaluator"
+    sandbox_report_bucket: str = ""
+    sandbox_report_prefix: str = "sandbox-reports"
     api_keys: str = Field(default="", description="Comma-separated Bearer tokens")
 
     screening_mode: ScreeningMode = Field(
@@ -50,6 +103,13 @@ class Settings(BaseSettings):
     @field_validator("screening_mode", mode="before")
     @classmethod
     def _strip_screening_mode(cls, value: object) -> object:
+        if isinstance(value, str):
+            return value.strip().lower()
+        return value
+
+    @field_validator("sandbox_provider", "sandbox_network_mode", mode="before")
+    @classmethod
+    def _strip_sandbox_literals(cls, value: object) -> object:
         if isinstance(value, str):
             return value.strip().lower()
         return value

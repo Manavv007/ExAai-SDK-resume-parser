@@ -33,6 +33,8 @@ class ScreeningSessionState(TypedDict, total=False):
     correction_prompt: str | None
     retry_count: int
     start_time: float
+    github_username: str | None
+    github_repo_analyses: dict[str, Any]
 
 
 # Documented keys for maintainers (TypedDict is not enforced at runtime).

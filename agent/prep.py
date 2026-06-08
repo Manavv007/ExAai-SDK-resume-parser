@@ -8,9 +8,17 @@ work runs concurrently without blocking the caller.
 from __future__ import annotations
 
 import time
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from typing import Any
+
+_GITHUB_THREADS: dict[str, tuple[threading.Thread, list[Exception]]] = {}
+
+
+def retrieve_github_thread(application_id: str) -> tuple[threading.Thread | None, list[Exception]]:
+    """Retrieve and pop the GitHub background thread and errors for an application."""
+    return _GITHUB_THREADS.pop(application_id, (None, []))
 
 from agent.security.pii_redactor import redact_text
 from agent.security.profile_identity import (
@@ -75,7 +83,18 @@ def prepare_screening_state(
 
     Returns a dict suitable for ADK ``session.state`` (no raw PII in values
     returned to the model except redacted resume text).
+
+    Performance: GitHub analysis is started as soon as links are extracted
+    and runs concurrently with the rest of prep (PII redaction, JD/resume
+    structuring, rubric building).
     """
+    import asyncio
+    import logging
+    import threading
+
+    from agent.tools.github_analyzer import analyze_github_repos, extract_github_username
+
+    prep_logger = logging.getLogger("exaai_adk.prep")
     started = time.monotonic()
 
     # --- Phase 1: Parse files (I/O-bound, must complete first) ---
@@ -87,17 +106,60 @@ def prepare_screening_state(
     else:
         raise ValueError("Either jd_text or jd_bytes is required")
 
-    # --- Phase 2: Run independent CPU-bound work in parallel ---
-    # PII redaction, link extraction, JD structuring, and resume structuring
-    # are all independent — they each take the raw resume/JD text and produce
-    # their own output.  Parallelizing them cuts prep latency roughly in half
-    # on a multi-core machine.
-    (resume_text, redaction_summary), links, jd_structured, resume_structured = (
-        _parallel_prep(resume_doc.text, jd_raw, resume_doc.hyperlinks)
+    # --- Phase 1.5: Extract links early so GitHub analysis can start ASAP ---
+    links = extract_links(
+        resume_doc.text,
+        jd=None,
+        pdf_hyperlinks=resume_doc.hyperlinks,
     )
+    link_urls = [link.url for link in links]
+    github_username = extract_github_username(link_urls)
+
+    # --- Kick off GitHub analysis in background thread (overlaps with Phase 2/3) ---
+    github_repo_analyses: dict[str, Any] = {}
+    github_error: list[Exception] = []
+
+    def _run_github_analysis(
+        username: str, urls: list[str], jd_raw_text: str
+    ) -> None:
+        """Run async GitHub analysis in a dedicated event loop thread."""
+        try:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            # Structure JD for the analyzer (needs the raw text parsed)
+            jd_struct = parse_jd_structured(jd_raw_text)
+            res = loop.run_until_complete(
+                analyze_github_repos(username, urls, asdict(jd_struct))
+            )
+            github_repo_analyses.update(res)
+        except Exception as e:
+            github_error.append(e)
+        finally:
+            loop.close()
+
+    github_thread: threading.Thread | None = None
+    if github_username:
+        github_thread = threading.Thread(
+            target=_run_github_analysis,
+            args=(github_username, link_urls, jd_raw),
+            daemon=True,
+        )
+        github_thread.start()
+        _GITHUB_THREADS[application_id] = (github_thread, github_error)
+
+    # --- Phase 2: Run independent CPU-bound work in parallel ---
+    # PII redaction, JD structuring, and resume structuring run concurrently.
+    # Link extraction was already done above to enable early GitHub kickoff.
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        redact_future = pool.submit(redact_text, resume_doc.text)
+        jd_future = pool.submit(parse_jd_structured, jd_raw)
+        resume_future = pool.submit(parse_resume_structured, resume_doc.text)
+
+        resume_text, redaction_summary = redact_future.result()
+        jd_structured = jd_future.result()
+        resume_structured = resume_future.result()
 
     # --- Phase 3: Dependent work (needs links + jd_structured) ---
-    # These require outputs from Phase 2, so they run sequentially.
     rubric_bundle = build_rubric_bundle(jd_structured)
     profile_assessments = assess_profile_links(resume_doc.text, links)
     profile_trust_by_url = trust_map_from_assessments(profile_assessments)
@@ -109,7 +171,7 @@ def prepare_screening_state(
         "resume_structured": asdict(resume_structured),
         "jd_raw": jd_raw,
         "jd_structured": asdict(jd_structured),
-        "profile_urls": [link.url for link in links],
+        "profile_urls": link_urls,
         "profile_url_meta": [
             {"url": link.url, "source": link.source, "platform": link.platform}
             for link in links
@@ -126,5 +188,8 @@ def prepare_screening_state(
         "profile_identity_cap_score": should_cap_score_for_identity(
             profile_assessments
         ),
+        "github_username": github_username,
+        "github_repo_analyses": github_repo_analyses,
         "prep_latency_ms": int((time.monotonic() - started) * 1000),
     }
+

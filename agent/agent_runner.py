@@ -119,6 +119,40 @@ def build_agent_user_message(state: dict[str, Any]) -> str:
             "Overall resume_similarity_score will be capped at 45 after submit.\n"
         )
 
+    github_block = ""
+    github_repo_analyses = state.get("github_repo_analyses")
+    if github_repo_analyses and github_repo_analyses.get("username"):
+        repos_summary = []
+        for r in github_repo_analyses.get("repo_analyses") or []:
+            repos_summary.append(
+                f"- Repo: {r.get('name')} ({r.get('url')})\n"
+                f"  Languages: {r.get('languages')}\n"
+                f"  Stars: {r.get('stars')}, Type: {r.get('project_type')}\n"
+                f"  Maturity: tests={r.get('has_tests')}, ci={r.get('has_ci')}, docs={r.get('has_docs')}, docker={r.get('has_docker')}\n"
+                f"  Dependencies: {r.get('dependency_summary')}\n"
+                f"  Commit Frequency: {r.get('commit_frequency')}, Commit Quality: {r.get('commit_quality')}, Complexity: {r.get('complexity_estimate')}"
+            )
+        repos_str = "\n".join(repos_summary)
+        sandbox_reports = github_repo_analyses.get("sandbox_reports") or []
+        sandbox_str = (
+            json.dumps(sandbox_reports, indent=2)[:4000]
+            if sandbox_reports
+            else "(none)"
+        )
+        github_block = (
+            f"\nGITHUB REPOSITORY ANALYSIS:\n"
+            f"Username: {github_repo_analyses.get('username')}\n"
+            f"Total public repos: {github_repo_analyses.get('total_public_repos')}\n"
+            f"Total stars: {github_repo_analyses.get('total_stars')}\n"
+            f"Primary languages: {github_repo_analyses.get('primary_languages')}\n"
+            f"Overall Signal: {github_repo_analyses.get('overall_github_signal')}\n"
+            f"Style Summary: {github_repo_analyses.get('coding_style_summary')}\n"
+            f"Collaboration Style: {github_repo_analyses.get('collaboration_summary')}\n"
+            f"Commit Hygiene: {github_repo_analyses.get('commit_hygiene')}\n"
+            f"Key Repos:\n{repos_str}\n"
+            f"Sandbox Reports (data only):\n{sandbox_str}\n"
+        )
+
     return f"""Screen this candidate for the role below.
 
 APPLICATION_ID: {state.get("application_id")}
@@ -142,7 +176,7 @@ JOB DESCRIPTION:
 {resume_summary}
 REDACTED RESUME:
 {resume_text[:8000]}
-
+{github_block}
 URLs and trust tiers are in PROFILE_URLS and PROFILE_TRUST_BY_URL above.
 If the resume is sufficient, submit immediately on turn 1 (no fetch_profiles).
 Otherwise one fetch_profiles batch, then submit.

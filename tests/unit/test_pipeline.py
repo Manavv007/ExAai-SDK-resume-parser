@@ -23,12 +23,13 @@ def _tool_name(tool: object) -> str:
 def test_create_screening_agent_has_tools(test_settings) -> None:
     agent = create_screening_agent()
     assert agent.name == "resume_screener"
-    assert len(agent.tools) == 2
+    assert len(agent.tools) == 3
     tool_names = {_tool_name(tool) for tool in agent.tools}
     expected = {fn.__name__ for fn in SCREENING_AGENT_TOOLS}
     assert tool_names == expected
     assert "fetch_profiles" in tool_names
     assert "submit_screening_result" in tool_names
+    assert "analyze_github" in tool_names
 
 
 def test_create_screening_agent_uses_configured_model(test_settings) -> None:
