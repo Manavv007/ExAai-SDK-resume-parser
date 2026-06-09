@@ -8,6 +8,7 @@ import pytest
 
 from agent.config import get_settings
 from agent.llm_client import (
+    DEFAULT_GROQ_MODEL,
     classify_llm_error,
     create_adk_model,
     effective_max_agent_turns,
@@ -30,11 +31,13 @@ def test_resolve_llm_provider_auto_prefers_groq_when_key_set(
     monkeypatch.setenv("LLM_PROVIDER", "auto")
     monkeypatch.setenv("GROQ_API_KEY", "gsk-test")
     monkeypatch.setenv("OPEN_ROUTER_API_KEY", "sk-or-test")
+    monkeypatch.delenv("GROQ_MODEL_ID", raising=False)
+    monkeypatch.delenv("GROQ_AGENT_MODEL_ID", raising=False)
     get_settings.cache_clear()
     settings = get_settings()
 
     assert resolve_llm_provider(settings) == "groq"
-    assert groq_model_id(settings) == "groq/llama-3.1-8b-instant"
+    assert groq_model_id(settings) == DEFAULT_GROQ_MODEL
 
 
 def test_resolve_llm_provider_auto_prefers_openrouter_when_only_openrouter_key_set(
