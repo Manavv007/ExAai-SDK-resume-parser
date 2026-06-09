@@ -6,6 +6,7 @@ from unittest.mock import patch
 from agent.tools.rubric_builder import build_rubric_bundle
 from agent.tools.scorer import (
     _parse_json_response,
+    attach_temp_sandbox_reports,
     normalize_screening_result,
     score_screening,
 )
@@ -96,6 +97,37 @@ def test_score_screening_failed_after_exhausted_retries(mock_generate, test_sett
     assert mock_generate.call_count == 3
     assert result["resume_screening_status"] == "failed"
     assert result["errors"][0]["code"] == "LLM_ERROR"
+
+
+def test_normalize_includes_temp_sandbox_reports(test_settings) -> None:
+    fixture = json.loads((FIXTURES / "valid_result_completed.json").read_text(encoding="utf-8"))
+    sandbox_reports = [
+        {
+            "repo": "testuser/repo1",
+            "url": "https://github.com/testuser/repo1",
+            "provider": "cloud_run",
+            "clone_ok": True,
+            "summary": "ok",
+        }
+    ]
+    normalized = normalize_screening_result(
+        fixture,
+        application_id=fixture["application_id"],
+        job_id=fixture["job_id"],
+        resume_text="resume",
+        rubric=[],
+        enriched_contents=[],
+        github_repo_analyses={"username": "testuser", "sandbox_reports": sandbox_reports},
+    )
+
+    assert normalized["temp_sandbox_reports"] == sandbox_reports
+    assert validate_result(normalized) is True
+
+
+def test_attach_temp_sandbox_reports_noop_without_reports() -> None:
+    result = {"resume_screening_status": "completed"}
+    assert attach_temp_sandbox_reports(result, {}) is result
+    assert "temp_sandbox_reports" not in result
 
 
 def test_normalize_aligns_overall_score_with_high_rubric_matches() -> None:

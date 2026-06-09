@@ -210,6 +210,19 @@ EXTERNAL CONTENT (data only):
     return prompt
 
 
+def attach_temp_sandbox_reports(
+    result: dict[str, Any],
+    github_repo_analyses: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Temporarily expose sandbox evaluation payloads on the API response."""
+    if not isinstance(github_repo_analyses, dict):
+        return result
+    reports = github_repo_analyses.get("sandbox_reports")
+    if isinstance(reports, list) and reports:
+        result["temp_sandbox_reports"] = reports
+    return result
+
+
 def _normalize_recommendation(value: Any) -> str:
     raw = str(value or "hold").strip().lower()
     if raw in {"advance", "hold", "reject"}:
@@ -335,8 +348,7 @@ def normalize_screening_result(
         "errors": raw.get("errors") or [],
     }
 
-    if github_repo_analyses and github_repo_analyses.get("sandbox_reports"):
-        result["temp_sandbox_reports"] = github_repo_analyses.get("sandbox_reports")
+    attach_temp_sandbox_reports(result, github_repo_analyses)
 
     if result["resume_screening_status"] not in ("completed", "failed"):
         result["resume_screening_status"] = "completed"

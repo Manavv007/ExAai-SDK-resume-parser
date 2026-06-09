@@ -21,7 +21,11 @@ from agent.config import get_settings
 from agent.llm_client import create_adk_model
 from agent.prep import prepare_screening_state
 from agent.session_state import SESSION_STATE_KEYS
-from agent.tools.scorer import build_failed_result, score_screening_from_state
+from agent.tools.scorer import (
+    attach_temp_sandbox_reports,
+    build_failed_result,
+    score_screening_from_state,
+)
 from agent.tools.validator import validate_result_detailed
 
 SCREENING_AGENT_TOOLS = [
@@ -198,6 +202,7 @@ async def run_screening_async(
     if result.get("metadata"):
         result["metadata"]["processing_time_ms"] = state["processing_time_ms"]
 
+    attach_temp_sandbox_reports(result, state.get("github_repo_analyses"))
     log_screening_result(state, result, request_id=request_id)
     return result
 

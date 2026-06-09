@@ -373,4 +373,6 @@ async def run_screening_agent_async(
         if processing_time_ms is not None:
             metadata["processing_time_ms"] = processing_time_ms
 
-    return screening_result
+    from agent.tools.scorer import attach_temp_sandbox_reports
+
+    return attach_temp_sandbox_reports(screening_result, state.get("github_repo_analyses"))

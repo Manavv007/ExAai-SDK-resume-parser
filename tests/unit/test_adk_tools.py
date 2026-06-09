@@ -421,3 +421,25 @@ def test_submit_screening_result_identity_cap_when_rubric_weak() -> None:
 
     assert outcome["ok"] is True
     assert outcome["screening_result"]["resume_similarity_score"]["score"] == 40
+
+
+def test_submit_screening_result_includes_temp_sandbox_reports() -> None:
+    sandbox_reports = [
+        {
+            "repo": "testuser/repo1",
+            "url": "https://github.com/testuser/repo1",
+            "provider": "cloud_run",
+            "clone_ok": True,
+            "summary": "ok",
+        }
+    ]
+    state = _base_session_state(
+        github_repo_analyses={
+            "username": "testuser",
+            "sandbox_reports": sandbox_reports,
+        }
+    )
+    outcome = process_screening_submission(state, _llm_scoring_payload())
+
+    assert outcome["ok"] is True
+    assert outcome["screening_result"]["temp_sandbox_reports"] == sandbox_reports

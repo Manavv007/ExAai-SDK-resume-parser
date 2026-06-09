@@ -51,6 +51,7 @@ def process_screening_submission(
             processing_time_ms=state.get("processing_time_ms"),
             identity_red_flags=list(state.get("identity_red_flags") or []),
             profile_identity_cap_score=bool(state.get("profile_identity_cap_score")),
+            github_repo_analyses=state.get("github_repo_analyses"),
         )
     except (ValueError, TypeError) as exc:
         return {"ok": False, "errors": [str(exc)]}
