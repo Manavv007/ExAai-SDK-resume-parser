@@ -9,6 +9,7 @@ from fastapi import APIRouter, File, Form, Request, UploadFile
 from fastapi.responses import JSONResponse
 
 from agent.pipeline import run_screening_async
+from agent.screening_store import ScreeningResultStore
 from api.auth import require_api_key
 from api.errors import screening_error_from_exception
 from api.file_validation import (
@@ -154,5 +155,56 @@ async def screen(
             job_id=job_id,
         )
 
-    status_code = 200 if result.get("resume_screening_status") == "completed" else 422
+    status = result.get("resume_screening_status")
+    if status == "completed":
+        status_code = 200
+    elif status == "processing":
+        status_code = 202
+    else:
+        status_code = 422
+    return JSONResponse(status_code=status_code, content=result)
+
+
+@router.get("/screenings/{application_id}/{job_id}")
+async def get_screening_result(
+    request: Request,
+    application_id: str,
+    job_id: str,
+    api_key: str | None = None,
+) -> JSONResponse:
+    """Fetch the latest persisted screening result, including deferred sandbox finalization."""
+    await require_api_key(request, api_key)
+
+    for field, value in (("application_id", application_id), ("job_id", job_id)):
+        err = validate_uuid(value, field)
+        if err:
+            return _error_response(400, code=err.code, message=err.message)
+
+    record = ScreeningResultStore().load(application_id=application_id, job_id=job_id)
+    if record is None:
+        return _error_response(
+            404,
+            code="NOT_FOUND",
+            message="No screening result found for the provided application_id and job_id.",
+            application_id=application_id,
+            job_id=job_id,
+        )
+
+    result = record.get("result")
+    if not isinstance(result, dict):
+        return _error_response(
+            500,
+            code="INVALID_RESULT_STORE",
+            message="Stored screening result is not readable.",
+            application_id=application_id,
+            job_id=job_id,
+        )
+
+    status = result.get("resume_screening_status")
+    if status == "completed":
+        status_code = 200
+    elif status == "processing":
+        status_code = 202
+    else:
+        status_code = 422
     return JSONResponse(status_code=status_code, content=result)

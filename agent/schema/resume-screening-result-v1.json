@@ -178,6 +178,20 @@
         "job_desc_version": { "type": "string" },
         "agent_version": { "type": "string", "minLength": 1 },
         "llm_calls": { "type": "integer", "minimum": 0 },
+        "llm_call_trace": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["n", "source", "model", "ts_ms"],
+            "additionalProperties": false,
+            "properties": {
+              "n": { "type": "integer", "minimum": 1 },
+              "source": { "type": "string", "minLength": 1 },
+              "model": { "type": "string", "minLength": 1 },
+              "ts_ms": { "type": "integer", "minimum": 0 }
+            }
+          }
+        },
         "agent_submit_fallback": { "type": "boolean" },
         "screening_mode": { "type": "string", "enum": ["pipeline", "agent"] }
       }

@@ -230,6 +230,30 @@ def _token_sets_related(left: frozenset[str] | set[str], right: frozenset[str] |
     return False
 
 
+def _is_personal_identity_profile_url(url: str) -> bool:
+    """Personal profile URLs used for cross-handle consistency (not company/school pages)."""
+    from agent.tools.link_extractor import normalize_url
+
+    normalized = normalize_url(url)
+    if not normalized:
+        return False
+    parsed = urlparse(normalized)
+    host = (parsed.netloc or "").lower().replace("www.", "")
+    parts = [p for p in parsed.path.split("/") if p]
+    if host.endswith("github.com") or host.endswith("gitlab.com"):
+        return bool(parts) and parts[0].lower() not in {
+            "orgs",
+            "settings",
+            "marketplace",
+            "topics",
+        }
+    if "linkedin.com" in host:
+        return len(parts) >= 2 and parts[0].lower() == "in"
+    return any(
+        host == profile_host or host.endswith("." + profile_host) for profile_host in _PROFILE_HOSTS
+    )
+
+
 def _explicit_slugs_consistent(slug_lists: list[list[str]]) -> bool:
     if len(slug_lists) <= 1:
         return True
@@ -279,10 +303,13 @@ def assess_profile_links(
     bundle = extract_identity_bundle(resume_text)
     explicit_profiles: list[tuple[str, list[str]]] = []
     for link in links:
-        if link.source == "explicit":
-            tokens = _slug_tokens_from_url(link.url, identity=bundle)
-            if tokens:
-                explicit_profiles.append((link.url, tokens))
+        if link.source != "explicit":
+            continue
+        if not _is_personal_identity_profile_url(link.url):
+            continue
+        tokens = _slug_tokens_from_url(link.url, identity=bundle)
+        if tokens:
+            explicit_profiles.append((link.url, tokens))
 
     explicit_slug_lists = [tokens for _, tokens in explicit_profiles]
     cross_links_ok = _explicit_slugs_consistent(explicit_slug_lists)
@@ -311,15 +338,18 @@ def assess_profile_links(
             )
             continue
 
-        if not cross_links_ok:
-            trust = ProfileTrust.SCORING_UNTRUSTED
-            reasons.append("conflicting_profile_slugs_on_resume")
+        if link.source == "explicit" and not _is_personal_identity_profile_url(link.url):
+            trust = ProfileTrust.SCORING_LIMITED
+            reasons.append("non_personal_profile_url")
         elif _slug_matches_identity(slug_tokens, bundle):
             trust = ProfileTrust.SCORING_TRUSTED
             reasons.append("profile_corroborated_with_resume_identity")
         elif others and _slug_cross_linked(slug_tokens, others):
             trust = ProfileTrust.SCORING_TRUSTED
             reasons.append("profile_cross_linked_with_other_resume_urls")
+        elif not cross_links_ok:
+            trust = ProfileTrust.SCORING_UNTRUSTED
+            reasons.append("conflicting_profile_slugs_on_resume")
         elif _identity_bundle_is_weak(bundle):
             trust = ProfileTrust.SCORING_LIMITED
             reasons.append("explicit_url_identity_not_established_on_resume")

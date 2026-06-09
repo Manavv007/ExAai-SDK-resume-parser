@@ -18,8 +18,17 @@ from agent.adk_tools import (
 from agent.agent_runner import SCREENING_AGENT_INSTRUCTION
 from agent.audit.logger import log_screening_result
 from agent.config import get_settings
-from agent.llm_client import create_adk_model
-from agent.prep import prepare_screening_state
+from agent.deferred_screening import schedule_deferred_sandbox_finalization
+from agent.llm_client import (
+    attach_llm_usage_metadata,
+    create_adk_model,
+    increment_llm_call_count,
+    reset_llm_call_count,
+    resolve_llm_provider,
+)
+from agent.prep import prepare_screening_state, retrieve_github_thread
+from agent.prep_context import clear_prep_state, register_prep_state
+from agent.sandbox_gating import ensure_sandbox_before_scoring
 from agent.session_state import SESSION_STATE_KEYS
 from agent.tools.scorer import (
     attach_temp_sandbox_reports,
@@ -35,21 +44,38 @@ SCREENING_AGENT_TOOLS = [
 ]
 
 
+def _counting_before_model_callback(callback_context: Any, llm_request: Any) -> Any:
+    """Count native Gemini ADK turns (LiteLLM agent models count in generate_content_async)."""
+    settings = get_settings()
+    if resolve_llm_provider(settings) == "gemini":
+        increment_llm_call_count(model=settings.gemini_model_id, source="adk_agent")
+    return None
+
+
 def create_screening_agent(
     *,
     before_model_callback: Any | None = None,
 ) -> Agent:
     """ADK agent with enrichment tools and submit_screening_result (Phase 3)."""
     settings = get_settings()
+
+    def chained_before_model_callback(callback_context: Any, llm_request: Any) -> Any:
+        _counting_before_model_callback(callback_context, llm_request)
+        if before_model_callback is not None:
+            return before_model_callback(
+                callback_context=callback_context,
+                llm_request=llm_request,
+            )
+        return None
+
     agent_kwargs: dict[str, Any] = {
         "name": "resume_screener",
         "model": create_adk_model(settings),
         "description": "Screens resumes with Exa-backed profile enrichment and structured verdict",
         "instruction": SCREENING_AGENT_INSTRUCTION,
         "tools": SCREENING_AGENT_TOOLS,
+        "before_model_callback": chained_before_model_callback,
     }
-    if before_model_callback is not None:
-        agent_kwargs["before_model_callback"] = before_model_callback
     return Agent(**agent_kwargs)
 
 
@@ -85,6 +111,7 @@ def score_with_validation(
     state: dict[str, Any],
     *,
     max_attempts: int = 2,
+    max_llm_attempts: int | None = None,
 ) -> dict[str, Any]:
     """
     Score and validate; retry once with correction prompt on schema failure.
@@ -95,7 +122,7 @@ def score_with_validation(
         if correction:
             state["correction_prompt"] = correction
 
-        result = score_screening_from_state(state)
+        result = score_screening_from_state(state, max_llm_attempts=max_llm_attempts)
         outcome = validate_result_detailed(result)
         if outcome.ok:
             if result.get("resume_screening_status") != "failed":
@@ -120,33 +147,27 @@ def score_with_validation(
     )
 
 
+async def _await_github_prep(application_id: str) -> None:
+    """Block until background GitHub API prep (and inline sandbox when configured) finishes."""
+    import asyncio
+    import logging
+
+    github_thread, github_error = retrieve_github_thread(application_id)
+    if github_thread is None:
+        return
+    await asyncio.to_thread(github_thread.join)
+    if github_error:
+        logging.getLogger("exaai_adk.prep").error(
+            "Error during GitHub deep analysis: %s",
+            github_error[0],
+        )
+
+
 async def run_screening_pipeline_async(state: dict[str, Any]) -> dict[str, Any]:
     """Deterministic path: enrich all profile URLs, then score with Gemini."""
-    import asyncio
-
     from agent.enrichment import enrich_profile_urls_async
-    from agent.prep import retrieve_github_thread
 
-    application_id = state.get("application_id", "")
-    github_thread, github_error = retrieve_github_thread(application_id)
-    if github_thread is not None:
-
-        async def wait_for_github():
-            await asyncio.to_thread(github_thread.join)
-            if github_error:
-                import logging
-
-                logging.getLogger("exaai_adk.prep").error(
-                    f"Error during GitHub deep analysis: {github_error[0]}"
-                )
-
-        await asyncio.gather(
-            enrich_profile_urls_async(state),
-            wait_for_github(),
-        )
-    else:
-        await enrich_profile_urls_async(state)
-
+    await enrich_profile_urls_async(state)
     return score_with_validation(state)
 
 
@@ -162,6 +183,7 @@ async def run_screening_async(
     request_id: str | None = None,
 ) -> dict[str, Any]:
     """Async screening entry; mode from SCREENING_MODE (pipeline or agent)."""
+    reset_llm_call_count()
     start = time.monotonic()
     state: dict[str, Any] = prepare_screening_state(
         application_id=application_id,
@@ -172,6 +194,10 @@ async def run_screening_async(
         jd_filename=jd_filename,
         jd_text=jd_text,
     )
+    if not request_id:
+        import uuid
+
+        request_id = uuid.uuid4().hex
     state["request_id"] = request_id
     state["start_time"] = start
     state["retry_count"] = 0
@@ -179,30 +205,33 @@ async def run_screening_async(
     settings = get_settings()
     screening_mode = settings.screening_mode
     state["screening_mode"] = screening_mode
-    if screening_mode == "agent":
-        from agent.prep import retrieve_github_thread
 
-        application_id = state.get("application_id", "")
-        github_thread, github_error = retrieve_github_thread(application_id)
-        if github_thread is not None:
-            github_thread.join()
-            if github_error:
-                import logging
+    application_id = str(state.get("application_id") or "")
+    register_prep_state(state)
+    try:
+        await _await_github_prep(application_id)
+        await ensure_sandbox_before_scoring(state)
+        register_prep_state(state)
 
-                logging.getLogger("exaai_adk.prep").error(
-                    f"Error during GitHub deep analysis: {github_error[0]}"
-                )
-        from agent.agent_runner import run_screening_agent_async
+        if screening_mode == "agent":
+            from agent.agent_runner import run_screening_agent_async
 
-        result = await run_screening_agent_async(state)
-    else:
-        result = await run_screening_pipeline_async(state)
+            result = await run_screening_agent_async(state)
+        else:
+            result = await run_screening_pipeline_async(state)
+    finally:
+        clear_prep_state(application_id)
 
     state["processing_time_ms"] = _elapsed_ms(start)
-    if result.get("metadata"):
-        result["metadata"]["processing_time_ms"] = state["processing_time_ms"]
+    metadata = result.get("metadata")
+    if not isinstance(metadata, dict):
+        metadata = {}
+        result["metadata"] = metadata
+    metadata["processing_time_ms"] = state["processing_time_ms"]
+    result["metadata"] = attach_llm_usage_metadata(metadata)
 
     attach_temp_sandbox_reports(result, state.get("github_repo_analyses"))
+    result = schedule_deferred_sandbox_finalization(state, result)
     log_screening_result(state, result, request_id=request_id)
     return result
 

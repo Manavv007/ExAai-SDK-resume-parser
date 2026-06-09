@@ -13,12 +13,23 @@ from google.genai import types
 
 from agent.config import get_settings
 from agent.llm_client import (
+    _litellm_fallback_providers,
+    attach_llm_usage_metadata,
     classify_llm_error,
     effective_max_agent_turns,
     get_llm_call_count,
-    reset_llm_call_count,
+    mark_gemini_rate_limited,
 )
-from agent.tools.scorer import _compact_rubric_for_prompt, build_failed_result
+from agent.prep_context import merge_with_prep_state, register_prep_state
+from agent.tools.rubric_builder import (
+    requirement_matches_need_rescore,
+    resolve_session_rubric,
+)
+from agent.tools.scorer import (
+    _compact_rubric_for_prompt,
+    attach_temp_sandbox_reports,
+    build_failed_result,
+)
 
 logger = logging.getLogger("exaai_adk.agent_runner")
 
@@ -38,6 +49,8 @@ Workflow:
    scoring_trusted profiles, or scoring_limited when the resume corroborates the same skills.
 4. Call submit_screening_result exactly once with: resume_similarity_score, requirement_matches
    (one per rubric criterion, same order), recommendation, recommendation_reasoning, red_flags.
+   For each requirement_matches entry, copy the exact rubric criterion text into requirement
+   and cite concrete resume/GitHub evidence (never use the literal word "requirement").
    Do not include application_id, job_id, metadata, or sources_crawled.
    If validation errors are returned, fix the payload and call submit again immediately.
    If fetch fails, submit from the resume alone — do not skip submit.
@@ -84,7 +97,7 @@ def build_agent_user_message(state: dict[str, Any]) -> str:
     context in one place before tool calls.
     """
     settings = get_settings()
-    rubric = list(state.get("rubric") or [])
+    rubric = resolve_session_rubric(merge_with_prep_state(state))
     rubric_compact = _compact_rubric_for_prompt(rubric)
     rubric_json = json.dumps(rubric_compact, indent=2)
     trust_map = state.get("profile_trust_by_url") or {}
@@ -200,16 +213,20 @@ async def seed_screening_session(
     user_id: str,
     session_id: str,
 ) -> None:
-    """Create an ADK session seeded with prep state (idempotent per session_id)."""
-    existing = await runner.session_service.get_session(
-        app_name=runner.app_name,
-        user_id=user_id,
-        session_id=session_id,
-    )
-    if existing is not None:
-        return
+    """Create a fresh ADK session seeded with full prep state for this screening run."""
+    session_service = runner.session_service
+    delete_session = getattr(session_service, "delete_session", None)
+    if callable(delete_session):
+        try:
+            await delete_session(
+                app_name=runner.app_name,
+                user_id=user_id,
+                session_id=session_id,
+            )
+        except Exception:
+            logger.debug("No prior ADK session to delete for %s/%s", user_id, session_id)
 
-    await runner.session_service.create_session(
+    await session_service.create_session(
         app_name=runner.app_name,
         user_id=user_id,
         session_id=session_id,
@@ -251,8 +268,8 @@ async def run_screening_agent_async(
     Expects prep state (from ``prepare_screening_state``). Does not auto-enrich all
     URLs — the agent chooses fetches via tools.
     """
+    register_prep_state(state)
     settings = get_settings()
-    reset_llm_call_count()
     max_turns = effective_max_agent_turns(settings)
     if runner is None:
         from agent.pipeline import create_runner
@@ -301,6 +318,30 @@ async def run_screening_agent_async(
     except Exception as exc:
         logger.exception("Agent run failed")
         code, message = classify_llm_error(exc)
+        if code == "LLM_RATE_LIMIT" and _litellm_fallback_providers(settings):
+            logger.warning(
+                "Agent hit LLM rate limit; attempting single-call pipeline score fallback"
+            )
+            from agent.pipeline import score_with_validation
+
+            mark_gemini_rate_limited()
+            merged_state = dict(state)
+            if processing_time_ms is not None:
+                merged_state["processing_time_ms"] = processing_time_ms
+            fallback = score_with_validation(
+                merged_state,
+                max_attempts=1,
+                max_llm_attempts=1,
+            )
+            if fallback.get("resume_screening_status") == "completed":
+                metadata = fallback.get("metadata")
+                if isinstance(metadata, dict):
+                    metadata["agent_submit_fallback"] = True
+                    fallback["metadata"] = attach_llm_usage_metadata(metadata)
+                return attach_temp_sandbox_reports(
+                    fallback,
+                    state.get("github_repo_analyses"),
+                )
         return build_failed_result(
             application_id=application_id,
             job_id=job_id,
@@ -340,14 +381,16 @@ async def run_screening_agent_async(
         merged_state.update(session_state)
         if processing_time_ms is not None:
             merged_state["processing_time_ms"] = processing_time_ms
-        fallback = score_with_validation(merged_state, max_attempts=1)
+        fallback = score_with_validation(
+            merged_state,
+            max_attempts=1,
+            max_llm_attempts=1,
+        )
         if fallback.get("resume_screening_status") == "completed":
             metadata = fallback.get("metadata")
             if isinstance(metadata, dict):
                 metadata["agent_submit_fallback"] = True
-                total_calls = get_llm_call_count()
-                if total_calls:
-                    metadata["llm_calls"] = total_calls
+                fallback["metadata"] = attach_llm_usage_metadata(metadata)
             return fallback
 
         return build_failed_result(
@@ -363,16 +406,44 @@ async def run_screening_agent_async(
             processing_time_ms=processing_time_ms,
         )
 
+    from agent.prep_context import session_state_to_dict
+
+    prep_state = merge_with_prep_state({**state, **session_state_to_dict(session_state)})
+    rubric = resolve_session_rubric(prep_state)
+    if requirement_matches_need_rescore(screening_result.get("requirement_matches"), rubric):
+        logger.warning(
+            "Agent submitted incomplete requirement_matches (%s/%s); running pipeline rescore",
+            len(screening_result.get("requirement_matches") or []),
+            len(rubric),
+        )
+        from agent.pipeline import score_with_validation
+
+        merged_state = prep_state
+        if not resolve_session_rubric(merged_state):
+            merged_state["rubric"] = rubric
+        if processing_time_ms is not None:
+            merged_state["processing_time_ms"] = processing_time_ms
+        fallback = score_with_validation(
+            merged_state,
+            max_attempts=1,
+            max_llm_attempts=1,
+        )
+        if fallback.get("resume_screening_status") == "completed":
+            metadata = fallback.get("metadata")
+            if isinstance(metadata, dict):
+                metadata["agent_submit_fallback"] = True
+                if processing_time_ms is not None:
+                    metadata["processing_time_ms"] = processing_time_ms
+                fallback["metadata"] = attach_llm_usage_metadata(metadata)
+            return attach_temp_sandbox_reports(
+                fallback,
+                state.get("github_repo_analyses"),
+            )
+
     metadata = screening_result.get("metadata")
     if isinstance(metadata, dict):
-        from agent.tools.result_sanitizer import optional_metadata_int
-
-        call_count = optional_metadata_int(get_llm_call_count())
-        if call_count is not None:
-            metadata["llm_calls"] = call_count
         if processing_time_ms is not None:
             metadata["processing_time_ms"] = processing_time_ms
-
-    from agent.tools.scorer import attach_temp_sandbox_reports
+        screening_result["metadata"] = attach_llm_usage_metadata(metadata)
 
     return attach_temp_sandbox_reports(screening_result, state.get("github_repo_analyses"))

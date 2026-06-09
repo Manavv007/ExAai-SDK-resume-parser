@@ -83,6 +83,43 @@ def test_score_screening_retries_on_invalid_json(mock_generate, test_settings) -
 
 
 @patch("agent.tools.scorer._generate_json")
+def test_score_screening_stops_after_rate_limit(mock_generate, test_settings) -> None:
+    from agent.llm_client import mark_gemini_rate_limited, reset_llm_call_count
+
+    reset_llm_call_count()
+    mark_gemini_rate_limited()
+    mock_generate.side_effect = Exception("RateLimitError: 429")
+
+    result = score_screening(
+        application_id="11111111-1111-4111-8111-111111111111",
+        job_id="22222222-2222-4222-8222-222222222222",
+        resume_text="text",
+        jd_raw="jd",
+        jd_structured={"domain": "general", "must_have": [], "nice_to_have": []},
+        max_llm_attempts=3,
+    )
+
+    assert mock_generate.call_count == 1
+    assert result["resume_screening_status"] == "failed"
+
+
+@patch("agent.tools.scorer._generate_json")
+def test_score_screening_respects_max_llm_attempts(mock_generate, test_settings) -> None:
+    mock_generate.side_effect = ValueError("still bad")
+
+    score_screening(
+        application_id="11111111-1111-4111-8111-111111111111",
+        job_id="22222222-2222-4222-8222-222222222222",
+        resume_text="text",
+        jd_raw="jd",
+        jd_structured={"domain": "general", "must_have": [], "nice_to_have": []},
+        max_llm_attempts=1,
+    )
+
+    assert mock_generate.call_count == 1
+
+
+@patch("agent.tools.scorer._generate_json")
 def test_score_screening_failed_after_exhausted_retries(mock_generate, test_settings) -> None:
     mock_generate.side_effect = ValueError("still bad")
 
@@ -94,7 +131,7 @@ def test_score_screening_failed_after_exhausted_retries(mock_generate, test_sett
         jd_structured={"domain": "general", "must_have": [], "nice_to_have": []},
     )
 
-    assert mock_generate.call_count == 3
+    assert mock_generate.call_count == 2
     assert result["resume_screening_status"] == "failed"
     assert result["errors"][0]["code"] == "LLM_ERROR"
 
@@ -124,7 +161,16 @@ def test_normalize_includes_temp_sandbox_reports(test_settings) -> None:
     assert validate_result(normalized) is True
 
 
-def test_attach_temp_sandbox_reports_noop_without_reports() -> None:
+def test_attach_temp_sandbox_reports_includes_empty_list_when_github_ran() -> None:
+    result = {"resume_screening_status": "completed"}
+    attach_temp_sandbox_reports(
+        result,
+        {"username": "Manavv007", "sandbox_reports": []},
+    )
+    assert result["temp_sandbox_reports"] == []
+
+
+def test_attach_temp_sandbox_reports_noop_without_github_username() -> None:
     result = {"resume_screening_status": "completed"}
     assert attach_temp_sandbox_reports(result, {}) is result
     assert "temp_sandbox_reports" not in result

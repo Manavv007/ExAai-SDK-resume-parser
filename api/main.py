@@ -26,3 +26,9 @@ app.add_middleware(RequestIdMiddleware)
 app.add_middleware(ApiKeyMiddleware)
 app.include_router(health_router)
 app.include_router(screening_router)
+
+
+@app.on_event("startup")
+def _resync_env_on_startup() -> None:
+    """Re-apply .env after reload so a saved .env edit is picked up without a manual restart."""
+    get_settings()

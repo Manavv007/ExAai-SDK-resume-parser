@@ -10,6 +10,22 @@ from agent.security.profile_identity import (
 from agent.tools.link_extractor import ExtractedLink, extract_links
 
 
+def test_personal_profiles_trusted_when_company_linkedin_also_on_resume() -> None:
+    resume = """
+    Manav Bhavsar
+    manav@gmail.com
+    GitHub: https://github.com/Manavv007
+    LinkedIn: https://linkedin.com/in/manavbhavsar0908
+    University: https://linkedin.com/school/pandit-deendayal-energy-university
+    """
+    links = extract_links(resume, max_urls=10)
+    assessments = assess_profile_links(resume, links)
+    gh = [a for a in assessments if "github.com/Manavv007" in a.url][0]
+    li = [a for a in assessments if "/in/manavbhavsar0908" in a.url][0]
+    assert gh.trust == ProfileTrust.SCORING_TRUSTED
+    assert li.trust == ProfileTrust.SCORING_TRUSTED
+
+
 def test_manav_name_matches_manavv007_github() -> None:
     resume = """
     Manav Bhavsar

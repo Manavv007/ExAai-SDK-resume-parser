@@ -1,6 +1,6 @@
 """Shared pytest fixtures."""
 
-import os
+from pathlib import Path
 
 import pytest
 
@@ -8,17 +8,22 @@ from agent.config import Settings, get_settings
 
 
 @pytest.fixture(autouse=True)
-def _test_env(monkeypatch: pytest.MonkeyPatch) -> None:
+def _test_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Default API keys for CI/local pytest (import must not require real secrets)."""
-    monkeypatch.setenv("GEMINI_API_KEY", os.environ.get("GEMINI_API_KEY", "test-gemini"))
-    monkeypatch.setenv("EXA_API_KEY", os.environ.get("EXA_API_KEY", "test-exa"))
-    monkeypatch.setenv("API_KEYS", os.environ.get("API_KEYS", "test-key"))
-    monkeypatch.setenv("LLM_PROVIDER", os.environ.get("LLM_PROVIDER", "gemini"))
+    monkeypatch.setattr("agent.config._ENV_FILE", tmp_path / "missing.env")
+    monkeypatch.setenv("GEMINI_API_KEY", "test-gemini")
+    monkeypatch.setenv("EXA_API_KEY", "test-exa")
+    monkeypatch.setenv("API_KEYS", "test-key")
+    monkeypatch.setenv("LLM_PROVIDER", "gemini")
+    monkeypatch.setenv("SCREENING_RESULT_STORE_PATH", str(tmp_path / "screening-results"))
     get_settings.cache_clear()
+    from agent.llm_client import reset_llm_call_count
     from agent.tools.github_client import GitHubClient
 
+    reset_llm_call_count()
     GitHubClient._rate_limit_reset_time = 0.0
     yield
+    reset_llm_call_count()
     GitHubClient._rate_limit_reset_time = 0.0
     get_settings.cache_clear()
 

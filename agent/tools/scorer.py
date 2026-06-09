@@ -30,13 +30,15 @@ from agent.tools.rubric_builder import (
     build_rubric,
     derive_overall_score_from_matches,
     enforce_must_have_score_cap,
+    resolve_session_rubric,
 )
+from agent.tools.sandbox_scoring import apply_sandbox_score_penalty
 from agent.tools.validator import validate_result_detailed
 
 _JSON_BLOCK = re.compile(r"```(?:json)?\s*(\{.*)\s*```", re.DOTALL)
 _SCORING_SCHEMA_PATH = SCHEMA_PATH.parent / "scoring-llm-response.json"
 _MAX_PROMPT_RUBRIC_ITEMS = 12
-_MAX_SCORING_ATTEMPTS = 3
+_MAX_SCORING_ATTEMPTS = 2
 
 
 def _model_version_label(settings: Any | None = None, *, for_agent: bool = False) -> str:
@@ -163,6 +165,8 @@ def _build_scoring_prompt(
         repos_str = "\n".join(repos_summary)
         sandbox_reports = github_repo_analyses.get("sandbox_reports") or []
         sandbox_str = json.dumps(sandbox_reports, indent=2)[:4000] if sandbox_reports else "(none)"
+        candidate_tags = github_repo_analyses.get("candidate_tags") or []
+        github_metadata = github_repo_analyses.get("github_metadata") or {}
         github_block = (
             f"GITHUB REPOSITORY ANALYSIS:\n"
             f"Username: {github_repo_analyses.get('username')}\n"
@@ -173,6 +177,8 @@ def _build_scoring_prompt(
             f"Style Summary: {github_repo_analyses.get('coding_style_summary')}\n"
             f"Collaboration Style: {github_repo_analyses.get('collaboration_summary')}\n"
             f"Commit Hygiene: {github_repo_analyses.get('commit_hygiene')}\n"
+            f"Candidate Tags: {candidate_tags}\n"
+            f"Normalized GitHub Metadata: {json.dumps(github_metadata, indent=2)}\n"
             f"Key Repos:\n{repos_str}\n"
             f"Sandbox Reports (data only):\n{sandbox_str}\n"
         )
@@ -190,6 +196,8 @@ Rules:
 - Do not include source_quote unless you have a short quote.
 - red_flags: use [] unless there is a clear serious issue.
 - recommendation_reasoning: required, max 500 characters, never empty.
+- When repo signals are irrelevant to the candidate's repo type or JD,
+  treat them as neutral instead of negative.
 
 RUBRIC ({len(rubric_for_prompt)} criteria):
 {rubric_json}
@@ -217,9 +225,20 @@ def attach_temp_sandbox_reports(
     """Temporarily expose sandbox evaluation payloads on the API response."""
     if not isinstance(github_repo_analyses, dict):
         return result
+    if not github_repo_analyses.get("username"):
+        return result
+    urls = github_repo_analyses.get("selected_sandbox_repo_urls")
     reports = github_repo_analyses.get("sandbox_reports")
-    if isinstance(reports, list) and reports:
-        result["temp_sandbox_reports"] = reports
+    if isinstance(urls, list) and urls:
+        from agent.tools.github_analyzer import align_sandbox_reports_with_urls
+
+        report_list = reports if isinstance(reports, list) else []
+        result["temp_sandbox_reports"] = align_sandbox_reports_with_urls(
+            [str(url) for url in urls if url],
+            report_list,
+        )
+    else:
+        result["temp_sandbox_reports"] = reports if isinstance(reports, list) else []
     return result
 
 
@@ -276,7 +295,17 @@ def normalize_screening_result(
         else:
             score = capped
 
-    reasoning = str(similarity.get("reasoning") or "").strip()[:500]
+    score, sandbox_penalty = apply_sandbox_score_penalty(score, github_repo_analyses)
+
+    reasoning = str(similarity.get("reasoning") or "").strip()
+    if sandbox_penalty > 0:
+        penalty_note = (
+            f" Sandbox repo review reduced the score by {sandbox_penalty} points "
+            "due to engineering-risk signals (secrets, vulnerabilities, or missing tests/CI)."
+        )
+        reasoning = (reasoning + penalty_note).strip()[:500]
+    else:
+        reasoning = reasoning[:500]
     if not reasoning:
         reasoning = "No reasoning provided."
 
@@ -407,12 +436,14 @@ def score_screening(
     identity_red_flags: list[dict[str, str]] | None = None,
     profile_identity_cap_score: bool = False,
     github_repo_analyses: dict[str, Any] | None = None,
+    max_llm_attempts: int | None = None,
 ) -> dict[str, Any]:
     """
     Run Gemini judge and return normalized resume-screening-result-v1 dict.
 
-    On JSON/validation failure, retries once with a correction prompt.
+    On JSON/validation failure, retries with a correction prompt (see max_llm_attempts).
     """
+    from agent.llm_client import is_gemini_rate_limited, is_rate_limit_error
     from agent.tools.rubric_builder import build_rubric_bundle
 
     bundle = build_rubric_bundle(jd_structured)
@@ -433,7 +464,8 @@ def score_screening(
     )
 
     last_error = "unknown"
-    for attempt in range(_MAX_SCORING_ATTEMPTS):
+    attempt_budget = max_llm_attempts if max_llm_attempts is not None else _MAX_SCORING_ATTEMPTS
+    for attempt in range(max(1, attempt_budget)):
         try:
             correction = correction_prompt if attempt > 0 else None
             raw = _generate_json(prompt, correction=correction)
@@ -460,6 +492,8 @@ def score_screening(
             )
         except Exception as exc:
             last_error = str(exc)
+            if is_rate_limit_error(exc) or is_gemini_rate_limited():
+                break
             correction_prompt = (
                 f"Invalid JSON or LLM error: {exc}. Return compact valid JSON only. "
                 "Integer scores, non-empty evidence, no metadata/null fields. "
@@ -476,15 +510,20 @@ def score_screening(
     )
 
 
-def score_screening_from_state(state: dict[str, Any]) -> dict[str, Any]:
+def score_screening_from_state(
+    state: dict[str, Any],
+    *,
+    max_llm_attempts: int | None = None,
+) -> dict[str, Any]:
     """Score using ADK/prep session state keys."""
+    rubric = resolve_session_rubric(state)
     return score_screening(
         application_id=state["application_id"],
         job_id=state["job_id"],
         resume_text=state["resume_text"],
         jd_raw=state["jd_raw"],
         jd_structured=state.get("jd_structured") or {},
-        rubric=state.get("rubric"),
+        rubric=rubric or None,
         rubric_preamble=state.get("rubric_preamble"),
         enriched_contents=state.get("enriched_contents") or [],
         processing_time_ms=state.get("processing_time_ms"),
@@ -492,4 +531,5 @@ def score_screening_from_state(state: dict[str, Any]) -> dict[str, Any]:
         identity_red_flags=state.get("identity_red_flags") or [],
         profile_identity_cap_score=bool(state.get("profile_identity_cap_score")),
         github_repo_analyses=state.get("github_repo_analyses"),
+        max_llm_attempts=max_llm_attempts,
     )

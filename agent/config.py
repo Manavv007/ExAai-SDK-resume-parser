@@ -1,20 +1,37 @@
 """Application settings loaded from environment."""
 
+import os
+from pathlib import Path
 from typing import Literal
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+_ENV_FILE = _PROJECT_ROOT / ".env"
+
+
+def _apply_dotenv_overrides() -> None:
+    """Make project .env win over pre-existing shell GOOGLE_API_KEY / GEMINI_API_KEY."""
+    # google-genai prefers GOOGLE_API_KEY; drop stale shell value not present in .env.
+    os.environ.pop("GOOGLE_API_KEY", None)
+    if not _ENV_FILE.is_file():
+        return
+    try:
+        from dotenv import load_dotenv
+
+        load_dotenv(_ENV_FILE, override=True)
+    except ImportError:
+        pass
+
 ScreeningMode = Literal["pipeline", "agent"]
-LlmProvider = Literal["gemini", "openrouter", "auto"]
+LlmProvider = Literal["gemini", "openrouter", "groq", "auto"]
 SandboxProvider = Literal["cloud_run", "docker", "e2b", "upstash_box"]
 SandboxNetworkMode = Literal["none", "install_only", "always"]
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=".env",
-        env_file_encoding="utf-8",
         extra="ignore",
     )
 
@@ -22,7 +39,29 @@ class Settings(BaseSettings):
     gemini_model_id: str = "gemini-2.0-flash"
     llm_provider: LlmProvider = Field(
         default="auto",
-        description="auto: OpenRouter if OPEN_ROUTER_API_KEY set, else Gemini",
+        description=(
+            "auto: Groq if GROQ_API_KEY set, else OpenRouter if OPEN_ROUTER_API_KEY set, "
+            "else Gemini"
+        ),
+    )
+    groq_api_key: str = ""
+    groq_model_id: str = Field(
+        default="llama-3.3-70b-versatile",
+        description="Groq model for pipeline scoring (LiteLLM groq/ prefix added automatically)",
+    )
+    groq_agent_model_id: str = Field(
+        default="llama-3.3-70b-versatile",
+        description=(
+            "Groq model for ADK agent tool calling (use 70b; 8b-instant often tool_use_failed)"
+        ),
+    )
+    groq_fallback_model_ids: str = Field(
+        default="llama-3.1-8b-instant",
+        description="Comma-separated fallback Groq models after 429 on primary",
+    )
+    groq_max_agent_turns: int = Field(
+        default=3,
+        description="Max ADK LLM turns when using Groq (free tier RPM/TPM limits)",
     )
     open_router_api_key: str = ""
     openrouter_model_id: str = Field(
@@ -61,12 +100,15 @@ class Settings(BaseSettings):
         description="Sandbox backend for repository execution analysis.",
     )
     sandbox_max_repos: int = Field(
-        default=2,
+        default=12,
         description="Legacy max selected repositories to clone/evaluate per candidate.",
     )
     sandbox_max_resume_repos: int = Field(
-        default=2,
-        description="Max resume-mentioned GitHub repositories to sandbox/evaluate.",
+        default=12,
+        description=(
+            "Max resume-mentioned GitHub repository URLs to analyze/sandbox "
+            "(typical resumes list up to ~6)."
+        ),
     )
     sandbox_max_profile_repos: int = Field(
         default=2,
@@ -83,6 +125,14 @@ class Settings(BaseSettings):
     sandbox_poll_interval_seconds: float = Field(
         default=2.0,
         description="Polling interval for Cloud Run sandbox job operations.",
+    )
+    sandbox_deferred_enabled: bool = Field(
+        default=False,
+        description=(
+            "When false (default), sandbox finishes before scoring and POST /screen "
+            "returns only completed results. When true, return a provisional score "
+            "with status processing and finalize in the background."
+        ),
     )
     sandbox_network_mode: SandboxNetworkMode = Field(
         default="install_only",
@@ -103,6 +153,13 @@ class Settings(BaseSettings):
         description="agent: ADK Runner tools; pipeline: enrich-all + score",
     )
 
+    @field_validator("llm_provider", mode="before")
+    @classmethod
+    def _strip_llm_provider(cls, value: object) -> object:
+        if isinstance(value, str):
+            return value.strip().lower()
+        return value
+
     @field_validator("screening_mode", mode="before")
     @classmethod
     def _strip_screening_mode(cls, value: object) -> object:
@@ -115,6 +172,19 @@ class Settings(BaseSettings):
     def _strip_sandbox_literals(cls, value: object) -> object:
         if isinstance(value, str):
             return value.strip().lower()
+        return value
+
+    @field_validator("github_clone_analysis_enabled", mode="before")
+    @classmethod
+    def _coerce_github_clone_analysis_enabled(cls, value: object) -> object:
+        if isinstance(value, str):
+            lowered = value.strip().lower()
+            if lowered in ("true", "1", "yes", "on"):
+                return True
+            if lowered in ("false", "0", "no", "off"):
+                return False
+            if lowered in ("auto", "hybrid"):
+                return lowered
         return value
 
     jd_parse_use_llm: bool = Field(
@@ -140,6 +210,7 @@ class Settings(BaseSettings):
     content_token_cap: int = 8000
     cache_ttl_seconds: int = 86400
     url_cache_path: str = "./data/url_cache.db"
+    screening_result_store_path: str = "./data/screening-results"
 
     max_agent_turns: int = Field(
         default=8,
@@ -163,6 +234,7 @@ def get_settings() -> Settings:
     """Load settings from environment on each call (.env edits apply without cache)."""
     from agent.llm_client import sync_llm_env
 
+    _apply_dotenv_overrides()
     settings = Settings()
     sync_llm_env(settings)
     return settings
@@ -173,3 +245,14 @@ def clear_settings_cache() -> None:
 
 
 get_settings.cache_clear = clear_settings_cache  # type: ignore[attr-defined]
+
+
+def _bootstrap_env() -> None:
+    """Sync .env into os.environ as early as possible (before ADK reads credentials)."""
+    _apply_dotenv_overrides()
+    from agent.llm_client import sync_llm_env
+
+    sync_llm_env(Settings())
+
+
+_bootstrap_env()

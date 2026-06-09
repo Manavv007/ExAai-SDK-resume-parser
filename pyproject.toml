@@ -27,6 +27,8 @@ dependencies = [
     "google-auth>=2.35.0",
     "google-cloud-storage>=2.18.0",
     "python-multipart>=0.0.12",
+    "tree-sitter>=0.21.3",
+    "tree-sitter-languages>=1.10.2",
 ]
 
 [project.optional-dependencies]

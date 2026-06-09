@@ -13,6 +13,8 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from typing import Any
 
+from agent.config import get_settings
+from agent.sandbox_gating import sandbox_mode_for_settings
 from agent.security.pii_redactor import redact_text
 from agent.security.profile_identity import (
     IDENTITY_SCORING_RULES,
@@ -126,7 +128,14 @@ def prepare_screening_state(
             asyncio.set_event_loop(loop)
             # Structure JD for the analyzer (needs the raw text parsed)
             jd_struct = parse_jd_structured(jd_raw_text)
-            res = loop.run_until_complete(analyze_github_repos(username, urls, asdict(jd_struct)))
+            res = loop.run_until_complete(
+                analyze_github_repos(
+                    username,
+                    urls,
+                    asdict(jd_struct),
+                    sandbox_mode=sandbox_mode_for_settings(get_settings()),
+                )
+            )
             github_repo_analyses.update(res)
         except Exception as e:
             github_error.append(e)

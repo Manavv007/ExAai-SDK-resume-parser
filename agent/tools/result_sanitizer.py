@@ -9,6 +9,17 @@ from agent.tools.parser import VALID_REQUIREMENT_TYPES
 _VALID_SEVERITIES = frozenset({"low", "medium", "high"})
 _VALID_RELEVANCE = frozenset({"high", "medium", "low"})
 _DEFAULT_EVIDENCE = "No explicit evidence found in resume or profiles."
+_PLACEHOLDER_REQUIREMENTS = frozenset(
+    {
+        "requirement",
+        "fit",
+        "role fit",
+        "criterion",
+        "technical_skill",
+        "must_have",
+        "nice_to_have",
+    }
+)
 
 
 def coerce_score(value: Any, *, default: int = 0) -> int:
@@ -29,6 +40,27 @@ def _rubric_item_name(item: Any) -> str:
     if isinstance(item, dict):
         return str(item.get("criterion") or item.get("requirement") or "").strip()
     return str(getattr(item, "criterion", None) or getattr(item, "requirement", None) or "").strip()
+
+
+def _is_placeholder_requirement(text: str) -> bool:
+    cleaned = text.strip().lower()
+    return not cleaned or cleaned in _PLACEHOLDER_REQUIREMENTS
+
+
+def _resolve_requirement_label(
+    item: dict[str, Any],
+    *,
+    rubric: list[Any],
+    index: int,
+) -> str:
+    """Map agent output to the rubric criterion text (fixes literal 'requirement' placeholders)."""
+    from_model = str(item.get("requirement") or item.get("criterion") or "").strip()
+    rubric_name = _rubric_item_name(rubric[index]) if index < len(rubric) else ""
+    if rubric_name and _is_placeholder_requirement(from_model):
+        return rubric_name
+    if from_model:
+        return from_model
+    return rubric_name or "requirement"
 
 
 def _rubric_item_type(item: Any) -> str:
@@ -52,9 +84,7 @@ def sanitize_requirement_matches(
     for index, item in enumerate(items):
         if not isinstance(item, dict):
             continue
-        requirement = str(item.get("requirement") or "").strip()
-        if not requirement and index < len(rubric):
-            requirement = _rubric_item_name(rubric[index]) or "requirement"
+        requirement = _resolve_requirement_label(item, rubric=rubric, index=index)
 
         req_type = str(item.get("requirement_type") or "").strip().lower()
         if req_type not in VALID_REQUIREMENT_TYPES:

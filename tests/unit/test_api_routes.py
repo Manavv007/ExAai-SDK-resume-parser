@@ -3,6 +3,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
+from agent.screening_store import ScreeningResultStore
 from api.main import app
 
 FIXTURE_APP_ID = "11111111-1111-4111-8111-111111111111"
@@ -136,3 +137,82 @@ def test_screen_invalid_uuid(client: TestClient, test_settings) -> None:
         files={"resume": ("resume.txt", b"text", "text/plain")},
     )
     assert response.status_code == 400
+
+
+@patch("api.routes.run_screening_async", new_callable=AsyncMock)
+def test_screen_returns_202_for_processing_result(
+    mock_run, client: TestClient, test_settings
+) -> None:
+    mock_run.return_value = {
+        "application_id": FIXTURE_APP_ID,
+        "job_id": FIXTURE_JOB_ID,
+        "resume_screening_status": "processing",
+        "resume_similarity_score": {"score": 70, "reasoning": "Good fit."},
+        "requirement_matches": [],
+        "recommendation": "advance",
+        "recommendation_reasoning": "Meets requirements.",
+        "red_flags": [],
+        "sources_crawled": [],
+        "metadata": {
+            "schema_version": "1.0",
+            "model_version": "exaai-adk/test",
+            "processed_at": "2026-06-09T12:00:00Z",
+            "processing_time_ms": 100,
+            "resume_text_chars": 10,
+            "agent_version": "0.1.0",
+        },
+        "errors": [],
+        "temp_sandbox_reports": [],
+    }
+
+    response = client.post(
+        "/screen",
+        headers={"Authorization": "Bearer test-key"},
+        data={
+            "application_id": FIXTURE_APP_ID,
+            "job_id": FIXTURE_JOB_ID,
+            "jd_text": "Need Python experience.",
+        },
+        files={"resume": ("resume.txt", b"Python engineer resume text.", "text/plain")},
+    )
+
+    assert response.status_code == 202
+    assert response.json()["resume_screening_status"] == "processing"
+
+
+def test_get_screening_result_returns_persisted_record(
+    client: TestClient, test_settings
+) -> None:
+    ScreeningResultStore().save(
+        application_id=FIXTURE_APP_ID,
+        job_id=FIXTURE_JOB_ID,
+        status="completed",
+        result={
+            "application_id": FIXTURE_APP_ID,
+            "job_id": FIXTURE_JOB_ID,
+            "resume_screening_status": "completed",
+            "resume_similarity_score": {"score": 80, "reasoning": "Strong fit."},
+            "requirement_matches": [],
+            "recommendation": "advance",
+            "recommendation_reasoning": "Looks solid.",
+            "red_flags": [],
+            "sources_crawled": [],
+            "metadata": {
+                "schema_version": "1.0",
+                "model_version": "exaai-adk/test",
+                "processed_at": "2026-06-09T12:00:00Z",
+                "processing_time_ms": 100,
+                "resume_text_chars": 10,
+                "agent_version": "0.1.0",
+            },
+            "errors": [],
+        },
+    )
+
+    response = client.get(
+        f"/screenings/{FIXTURE_APP_ID}/{FIXTURE_JOB_ID}",
+        headers={"Authorization": "Bearer test-key"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["resume_similarity_score"]["score"] == 80

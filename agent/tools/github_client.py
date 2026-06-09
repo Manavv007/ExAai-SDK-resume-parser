@@ -170,6 +170,31 @@ class GitHubClient:
             logger.error(f"GitHub API network error on {url}: {e}")
             raise
 
+    def _repo_meta_from_api(self, repo: dict[str, Any]) -> RepoMeta:
+        return RepoMeta(
+            name=repo.get("name", ""),
+            owner=repo.get("owner", {}).get("login", ""),
+            url=repo.get("html_url", ""),
+            description=repo.get("description"),
+            language=repo.get("language"),
+            stars=repo.get("stargazers_count", 0),
+            forks=repo.get("forks_count", 0),
+            is_fork=repo.get("fork", False),
+            default_branch=repo.get("default_branch", "main"),
+            updated_at=repo.get("updated_at", ""),
+            topics=repo.get("topics", []),
+        )
+
+    async def get_repo_meta(self, owner: str, repo: str) -> RepoMeta | None:
+        """Fetch metadata for a single public repository by owner/name."""
+        url = f"https://api.github.com/repos/{owner}/{repo}"
+        try:
+            response = await self._request("GET", url)
+            return self._repo_meta_from_api(response.json())
+        except Exception as e:
+            logger.warning("Failed to fetch repo %s/%s: %s", owner, repo, e)
+            return None
+
     async def get_user_repos(self, username: str) -> list[RepoMeta]:
         """Fetch list of public repositories for a user."""
         url = f"https://api.github.com/users/{username}/repos"
@@ -179,24 +204,7 @@ class GitHubClient:
             response = await self._request("GET", url, params=params)
             repos_data = response.json()
 
-            repos = []
-            for repo in repos_data:
-                repos.append(
-                    RepoMeta(
-                        name=repo.get("name", ""),
-                        owner=repo.get("owner", {}).get("login", ""),
-                        url=repo.get("html_url", ""),
-                        description=repo.get("description"),
-                        language=repo.get("language"),
-                        stars=repo.get("stargazers_count", 0),
-                        forks=repo.get("forks_count", 0),
-                        is_fork=repo.get("fork", False),
-                        default_branch=repo.get("default_branch", "main"),
-                        updated_at=repo.get("updated_at", ""),
-                        topics=repo.get("topics", []),
-                    )
-                )
-            return repos
+            return [self._repo_meta_from_api(repo) for repo in repos_data]
         except Exception as e:
             logger.error(f"Failed to fetch repos for user {username}: {e}")
             return []

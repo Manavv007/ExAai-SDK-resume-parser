@@ -36,6 +36,34 @@ GITHUB_RESERVED_PATHS = {
     "issues",
 }
 
+# Second path segment in github.com/{owner}/{segment}/... that is not a repository name.
+GITHUB_NON_REPO_SEGMENTS = frozenset(
+    {
+        "tree",
+        "blob",
+        "raw",
+        "commits",
+        "commit",
+        "issues",
+        "pull",
+        "pulls",
+        "wiki",
+        "discussions",
+        "actions",
+        "projects",
+        "packages",
+        "settings",
+        "releases",
+        "tags",
+        "stargazers",
+        "network",
+        "graphs",
+        "security",
+        "login",
+        "signup",
+    }
+)
+
 # Top programming languages and their standard file extensions
 LANG_EXTENSIONS = {
     ".py": "Python",
@@ -81,6 +109,8 @@ class RepoAnalysis:
     commit_quality: str = "basic"
     complexity_estimate: str = "simple"
     commits: list[dict[str, Any]] = field(default_factory=list)
+    repo_type_tags: list[str] = field(default_factory=list)
+    github_metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -98,6 +128,8 @@ class GitHubAnalysis:
     selected_sandbox_repo_urls: list[str] = field(default_factory=list)
     sandbox_reports: list[dict[str, Any]] = field(default_factory=list)
     repo_selection_mode: str = "none"
+    candidate_tags: list[str] = field(default_factory=list)
+    github_metadata: dict[str, Any] = field(default_factory=dict)
 
 
 def extract_github_username(urls: list[str]) -> str | None:
@@ -123,7 +155,12 @@ def normalize_github_repo_url(url: str) -> str | None:
 
     owner = match.group(1).strip()
     repo = match.group(2).strip().removesuffix(".git")
-    if not owner or not repo or owner.lower() in GITHUB_RESERVED_PATHS:
+    if (
+        not owner
+        or not repo
+        or owner.lower() in GITHUB_RESERVED_PATHS
+        or repo.lower() in GITHUB_NON_REPO_SEGMENTS
+    ):
         return None
     return f"https://github.com/{owner}/{repo}"
 
@@ -152,25 +189,73 @@ def _repo_key_from_url(url: str) -> tuple[str, str] | None:
     return owner.lower(), repo.lower()
 
 
+def _resume_repo_cap(settings: Any) -> int:
+    configured = int(getattr(settings, "sandbox_max_resume_repos", 12) or 12)
+    return max(1, min(configured, 12))
+
+
+def _sandbox_batch_wait_seconds(settings: Any, repo_count: int) -> float:
+    """Wall-clock budget for a parallel sandbox batch (grows with repo count)."""
+    base = float(getattr(settings, "sandbox_wait_seconds", 45.0) or 0)
+    if base <= 0 or repo_count <= 0:
+        return base
+    if repo_count == 1:
+        return base
+    # Extra repos run in parallel but stagger Cloud Run job completion.
+    return base + (repo_count - 1) * (base * 0.35)
+
+
+def align_sandbox_reports_with_urls(
+    urls: list[str],
+    reports: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Ensure one report per selected URL, preserving resume order."""
+    by_url: dict[str, dict[str, Any]] = {}
+    for report in reports:
+        if isinstance(report, dict):
+            url = str(report.get("url") or "").strip()
+            if url:
+                by_url[url] = report
+    return [by_url[url] for url in urls if url in by_url]
+
+
+async def _resolve_resume_repos_for_analysis(
+    *,
+    client: GitHubClient,
+    all_repos: list[RepoMeta],
+    resume_repo_urls: list[str],
+    settings: Any,
+) -> list[RepoMeta]:
+    """Resolve every resume-listed repo URL to RepoMeta (profile list or direct API lookup)."""
+    by_key = {(repo.owner.lower(), repo.name.lower()): repo for repo in all_repos}
+    selected: list[RepoMeta] = []
+    seen: set[tuple[str, str]] = set()
+
+    for url in resume_repo_urls[: _resume_repo_cap(settings)]:
+        key = _repo_key_from_url(url)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        if key in by_key:
+            selected.append(by_key[key])
+            continue
+        owner, name = key
+        repo = await client.get_repo_meta(owner, name)
+        if repo is not None:
+            selected.append(repo)
+    return selected
+
+
 def _select_static_repos(
     *,
-    all_repos: list[RepoMeta],
+    resolved_resume_repos: list[RepoMeta],
     ranked_repos: list[RepoMeta],
     resume_repo_urls: list[str],
     settings: Any,
 ) -> tuple[list[RepoMeta], str]:
-    """Select repos for static analysis; resume-mentioned repos win over ranking."""
-    if resume_repo_urls:
-        by_key = {(repo.owner.lower(), repo.name.lower()): repo for repo in all_repos}
-        selected: list[RepoMeta] = []
-        limit = getattr(settings, "sandbox_max_resume_repos", 5)
-        for url in resume_repo_urls[:limit]:
-            key = _repo_key_from_url(url)
-            repo = by_key.get(key) if key else None
-            if repo is not None:
-                selected.append(repo)
-        if selected:
-            return selected, "resume_repos"
+    """Select repos for static GitHub API analysis."""
+    if resume_repo_urls and resolved_resume_repos:
+        return resolved_resume_repos, "resume_repos"
 
     limit = getattr(settings, "max_repos_to_analyze", 3)
     return ranked_repos[:limit], "ranked_profile_repos"
@@ -182,10 +267,9 @@ def _select_sandbox_repo_urls(
     resume_repo_urls: list[str],
     settings: Any,
 ) -> tuple[list[str], str]:
-    """Select repos for dynamic sandboxing; evaluate resume repos before fallback ranking."""
+    """Select repos for sandbox cloning — all resume repo links, in resume order."""
     if resume_repo_urls:
-        limit = getattr(settings, "sandbox_max_resume_repos", 5)
-        return resume_repo_urls[:limit], "resume_repos"
+        return resume_repo_urls[: _resume_repo_cap(settings)], "resume_repos"
 
     limit = getattr(settings, "sandbox_max_profile_repos", 2)
     return [repo.url for repo in ranked_repos[:limit]], "ranked_profile_repos"
@@ -221,9 +305,11 @@ def _sandbox_skip_report(
 async def _evaluate_sandbox_repos(
     repo_urls: list[str],
     settings: Any,
+    *,
+    _retry_pass: int = 0,
 ) -> list[dict[str, Any]]:
     """Evaluate selected repositories in parallel through the configured sandbox provider."""
-    if not getattr(settings, "github_clone_analysis_enabled", False) or not repo_urls:
+    if not repo_urls:
         return []
 
     from agent.sandbox.providers import create_sandbox_provider
@@ -260,31 +346,64 @@ async def _evaluate_sandbox_repos(
                 summary="Sandbox evaluation failed before a report was produced.",
             )
 
-    wait_seconds = float(getattr(settings, "sandbox_wait_seconds", 45.0) or 0)
-    try:
-        if wait_seconds > 0:
-            async with asyncio.timeout(wait_seconds):
-                return list(await asyncio.gather(*(evaluate(url) for url in repo_urls)))
-        return list(await asyncio.gather(*(evaluate(url) for url in repo_urls)))
-    except TimeoutError:
-        logger.warning(
-            "Sandbox evaluation exceeded wait budget of %ss for %s repo(s)",
-            wait_seconds,
-            len(repo_urls),
-        )
-        return [
-            _sandbox_skip_report(
-                url=url,
-                settings=settings,
-                reason=f"Sandbox wait budget exceeded after {wait_seconds}s.",
-                summary=(
-                    "Sandbox evaluation did not finish within the screening wait budget; "
-                    "static GitHub evidence was used instead."
-                ),
-                timed_out=True,
+    batch_wait = _sandbox_batch_wait_seconds(settings, len(repo_urls))
+    tasks = {asyncio.create_task(evaluate(url)): url for url in repo_urls}
+    results_by_url: dict[str, dict[str, Any]] = {}
+
+    if batch_wait > 0:
+        done, pending = await asyncio.wait(set(tasks.keys()), timeout=batch_wait)
+        for task in done:
+            url = tasks[task]
+            try:
+                results_by_url[url] = task.result()
+            except Exception as exc:
+                logger.warning("Sandbox task failed for %s: %s", url, exc)
+                results_by_url[url] = _sandbox_skip_report(
+                    url=url,
+                    settings=settings,
+                    reason=f"Sandbox evaluation failed: {exc}",
+                    summary="Sandbox evaluation failed before a report was produced.",
+                )
+        if pending:
+            logger.warning(
+                "Sandbox batch timed out after %ss with %s/%s repo(s) still running",
+                batch_wait,
+                len(pending),
+                len(repo_urls),
             )
-            for url in repo_urls
-        ]
+            for task in pending:
+                task.cancel()
+                url = tasks[task]
+                results_by_url[url] = _sandbox_skip_report(
+                    url=url,
+                    settings=settings,
+                    reason=f"Sandbox wait budget exceeded after {batch_wait:.0f}s.",
+                    summary=(
+                        "Sandbox evaluation did not finish within the screening wait budget; "
+                        "static GitHub evidence was used instead."
+                    ),
+                    timed_out=True,
+                )
+    else:
+        gathered = await asyncio.gather(*(evaluate(url) for url in repo_urls))
+        results_by_url = dict(zip(repo_urls, gathered))
+
+    timed_out_urls = [
+        url
+        for url in repo_urls
+        if results_by_url.get(url, {}).get("timed_out") is True
+    ]
+    if timed_out_urls and _retry_pass < 1:
+        logger.info("Retrying %s sandbox repo(s) that timed out on first pass", len(timed_out_urls))
+        retry_reports = await _evaluate_sandbox_repos(
+            timed_out_urls,
+            settings,
+            _retry_pass=_retry_pass + 1,
+        )
+        for url, report in zip(timed_out_urls, retry_reports):
+            results_by_url[url] = report
+
+    return [results_by_url[url] for url in repo_urls]
 
 
 def _get_jd_keywords(jd_structured: dict[str, Any] | None) -> set[str]:
@@ -352,6 +471,48 @@ def _get_jd_keywords(jd_structured: dict[str, Any] | None) -> set[str]:
             keywords.add(tech)
 
     return keywords
+
+
+def _classify_candidate_tags(
+    jd_structured: dict[str, Any] | None,
+    repos_data: list[dict[str, Any]],
+) -> list[str]:
+    text = json.dumps(jd_structured or {}).lower()
+    text += " " + json.dumps(repos_data).lower()
+    mapping = {
+        "frontend_engineer": ("react", "next", "frontend", "typescript"),
+        "backend_engineer": ("fastapi", "flask", "express", "backend", "api"),
+        "fullstack_engineer": ("fullstack", "frontend", "backend"),
+        "ml_engineer": ("ml", "training", "pytorch", "tensorflow"),
+        "ai_engineer": ("langchain", "llm", "rag", "agent", "ai"),
+        "cybersecurity_engineer": ("security", "siem", "ctf", "vulnerability", "threat"),
+        "data_engineer": ("airflow", "pipeline", "warehouse", "etl", "data"),
+        "devops_platform_engineer": ("terraform", "helm", "kubernetes", "platform", "devops"),
+        "general_software_engineer": ("python", "java", "go", "javascript"),
+    }
+    tags = [tag for tag, needles in mapping.items() if any(needle in text for needle in needles)]
+    if not tags:
+        tags.append("general_software_engineer")
+    return sorted(dict.fromkeys(tags))
+
+
+def _build_repo_github_metadata(repo: RepoMeta) -> dict[str, Any]:
+    return {
+        "stars": repo.stars,
+        "forks": repo.forks,
+        "watchers": None,
+        "default_branch": repo.default_branch,
+        "archived": None,
+        "topics": repo.topics,
+        "last_push_at": repo.updated_at,
+        "license_present": None,
+        "has_wiki": None,
+        "has_pages": None,
+        "open_issue_ratio": None,
+        "open_pr_ratio": None,
+        "release_count": None,
+        "contributors_count": None,
+    }
 
 
 def _score_repo_relevance(repo: RepoMeta, jd_keywords: set[str]) -> float:
@@ -721,53 +882,37 @@ async def _generate_coding_style_summary(
         f"JSON Response:"
     )
 
-    provider = settings.llm_provider
-    if provider == "auto":
-        provider = "openrouter" if settings.open_router_api_key.strip() else "gemini"
+    from agent.llm_client import LITELLM_PROVIDERS, complete_json_for_provider, resolve_llm_provider
+
+    provider = resolve_llm_provider(settings)
 
     try:
-        if provider == "openrouter":
-            import litellm
-
-            from agent.llm_client import OPENROUTER_API_BASE, openrouter_model_id
-
-            model = openrouter_model_id(settings)
-
-            response = litellm.completion(
-                model=model,
-                messages=[{"role": "user", "content": prompt}],
-                api_key=settings.open_router_api_key,
-                api_base=OPENROUTER_API_BASE,
-                response_format={
-                    "type": "json_schema",
-                    "json_schema": {
-                        "name": "github_summary",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "coding_style_summary": {"type": "string"},
-                                "overall_github_signal": {
-                                    "type": "string",
-                                    "enum": ["strong", "moderate", "weak", "none"],
-                                },
-                                "collaboration_style": {"type": "string"},
-                                "commit_hygiene": {"type": "string"},
-                            },
-                            "required": [
-                                "coding_style_summary",
-                                "overall_github_signal",
-                                "collaboration_style",
-                                "commit_hygiene",
-                            ],
+        if provider in LITELLM_PROVIDERS:
+            data = complete_json_for_provider(
+                prompt,
+                settings=settings,
+                provider=provider,
+                schema_name="github_summary",
+                schema={
+                    "type": "object",
+                    "properties": {
+                        "coding_style_summary": {"type": "string"},
+                        "overall_github_signal": {
+                            "type": "string",
+                            "enum": ["strong", "moderate", "weak", "none"],
                         },
-                        "strict": True,
+                        "collaboration_style": {"type": "string"},
+                        "commit_hygiene": {"type": "string"},
                     },
+                    "required": [
+                        "coding_style_summary",
+                        "overall_github_signal",
+                        "collaboration_style",
+                        "commit_hygiene",
+                    ],
                 },
-                temperature=0.1,
                 max_tokens=1000,
             )
-            text = response.choices[0].message.content or ""
-            data = json.loads(text)
             return (
                 data.get("coding_style_summary", ""),
                 data.get("overall_github_signal", "none"),
@@ -816,6 +961,12 @@ async def _generate_coding_style_summary(
 
             if response is None:
                 raise RuntimeError("Gemini call failed with no response")
+            from agent.llm_client import increment_llm_call_count
+
+            increment_llm_call_count(
+                model=settings.gemini_model_id,
+                source="github_coding_summary",
+            )
             text = response.text or ""
             data = json.loads(text)
             return (
@@ -1105,6 +1256,18 @@ async def _analyze_single_repo(
     if len(dependency_summary) > 200:
         dependency_summary = dependency_summary[:200] + "..."
 
+    repo_type_tags: list[str] = []
+    if project_type == "web-app":
+        repo_type_tags.append("frontend_app")
+    elif project_type == "dockerized-app":
+        repo_type_tags.append("backend_service")
+    elif project_type == "library":
+        repo_type_tags.append("sdk_or_library")
+    else:
+        repo_type_tags.append("research_prototype" if code_file_count <= 10 else "automation_tool")
+    if has_docker and "backend_service" not in repo_type_tags:
+        repo_type_tags.append("infra_iac_repo")
+
     commits_dicts = [
         {"sha": c.sha, "message": c.message, "author_name": c.author_name, "date": c.date}
         for c in commits
@@ -1128,11 +1291,17 @@ async def _analyze_single_repo(
         commit_quality=commit_quality,
         complexity_estimate=complexity,
         commits=commits_dicts,
+        repo_type_tags=sorted(dict.fromkeys(repo_type_tags)),
+        github_metadata=_build_repo_github_metadata(repo),
     )
 
 
 async def analyze_github_repos(
-    username: str, repo_urls: list[str] | None = None, jd_structured: dict[str, Any] | None = None
+    username: str,
+    repo_urls: list[str] | None = None,
+    jd_structured: dict[str, Any] | None = None,
+    *,
+    sandbox_mode: Literal["inline", "deferred"] = "inline",
 ) -> dict[str, Any]:
     """Fetch and deeply analyze a candidate's GitHub repositories.
 
@@ -1186,7 +1355,11 @@ async def analyze_github_repos(
                 resume_repo_urls=resume_repo_urls,
                 settings=settings,
             )
-            sandbox_reports = await _evaluate_sandbox_repos(selected_sandbox_urls, settings)
+            sandbox_reports = (
+                []
+                if sandbox_mode == "deferred"
+                else await _evaluate_sandbox_repos(selected_sandbox_urls, settings)
+            )
             return asdict(
                 GitHubAnalysis(
                     username=username,
@@ -1211,8 +1384,14 @@ async def analyze_github_repos(
         repos_with_scores.sort(key=lambda x: (x[1], x[0].stars, x[0].updated_at), reverse=True)
 
         ranked_repos = [repo for repo, score in repos_with_scores]
-        selected_repos, selection_mode = _select_static_repos(
+        resolved_resume_repos = await _resolve_resume_repos_for_analysis(
+            client=client,
             all_repos=all_repos,
+            resume_repo_urls=resume_repo_urls,
+            settings=settings,
+        )
+        selected_repos, selection_mode = _select_static_repos(
+            resolved_resume_repos=resolved_resume_repos,
             ranked_repos=ranked_repos,
             resume_repo_urls=resume_repo_urls,
             settings=settings,
@@ -1248,12 +1427,29 @@ async def analyze_github_repos(
         )
 
         repos_dict_list = [asdict(r) for r in repo_analyses_list]
+        candidate_tags = _classify_candidate_tags(jd_structured, repos_dict_list)
+        github_metadata = {
+            "total_public_repos": len(all_repos),
+            "total_stars": sum_stars,
+            "primary_languages": top_languages,
+        }
 
         # Determine whether we should run the sandbox dynamically (auto/hybrid mode)
         run_sandbox = False
         enabled_val = getattr(settings, "github_clone_analysis_enabled", False)
+        logger.info(
+            "GITHUB_CLONE_ANALYSIS_ENABLED value: %s (type: %s)",
+            enabled_val,
+            type(enabled_val),
+        )
+        logger.info(f"resume_repo_urls: {resume_repo_urls}")
+        logger.info(f"selected_sandbox_urls: {selected_sandbox_urls}")
         if isinstance(enabled_val, bool):
             run_sandbox = enabled_val
+        elif str(enabled_val).strip().lower() in ("true", "1", "yes", "on"):
+            run_sandbox = True
+        elif str(enabled_val).strip().lower() in ("false", "0", "no", "off"):
+            run_sandbox = False
         elif str(enabled_val).lower() in ("auto", "hybrid"):
             # Dynamic hybrid rules
             if resume_repo_urls:
@@ -1286,7 +1482,7 @@ async def analyze_github_repos(
                         "specific resume project cues)."
                     )
 
-        if run_sandbox and selected_sandbox_urls:
+        if run_sandbox and selected_sandbox_urls and sandbox_mode == "inline":
             sandbox_task = asyncio.create_task(
                 _evaluate_sandbox_repos(selected_sandbox_urls, settings)
             )
@@ -1334,5 +1530,7 @@ async def analyze_github_repos(
             repo_selection_mode=(
                 sandbox_selection_mode if run_sandbox else selection_mode
             ),
+            candidate_tags=candidate_tags,
+            github_metadata=github_metadata,
         )
     )

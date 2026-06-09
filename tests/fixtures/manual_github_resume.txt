@@ -1,0 +1,13 @@
+Manav Example
+Senior AI Engineer
+Email: manav@example.com
+Phone: +91 99999 99999
+GitHub: https://github.com/Manavv007
+Project Repo: https://github.com/Manavv007/StrictAI
+Project Repo: https://github.com/Manavv007/predictive-maintenance-agent-n8n
+LinkedIn: https://www.linkedin.com/in/manav-example
+
+Experience:
+- 5+ years building Python systems, FastAPI services, and LLM workflows.
+- Hands-on with AI agents, RAG pipelines, automation, and cloud deployment.
+- Comfortable with containerization, CI/CD, and applied ML products.

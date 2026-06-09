@@ -5,7 +5,8 @@ from __future__ import annotations
 from typing import Any
 from uuid import UUID
 
-from agent.tools.rubric_builder import build_rubric
+from agent.prep_context import merge_with_prep_state
+from agent.tools.rubric_builder import resolve_session_rubric
 from agent.tools.scorer import normalize_screening_result
 from agent.tools.validator import validate_result_detailed
 
@@ -25,8 +26,9 @@ def process_screening_submission(
             "errors": ["result must be a JSON object"],
         }
 
-    application_id = str(state.get("application_id") or "")
-    job_id = str(state.get("job_id") or "")
+    merged_state = merge_with_prep_state(state)
+    application_id = str(merged_state.get("application_id") or "")
+    job_id = str(merged_state.get("job_id") or "")
     try:
         UUID(application_id)
         UUID(job_id)
@@ -36,22 +38,20 @@ def process_screening_submission(
             "errors": ["session application_id and job_id must be valid UUIDs"],
         }
 
-    jd_structured = state.get("jd_structured") or {}
-    rubric = state.get("rubric")
-    rubric_models = build_rubric(jd_structured) if not rubric else rubric
+    rubric_models = resolve_session_rubric(merged_state)
 
     try:
         normalized = normalize_screening_result(
             raw,
             application_id=application_id,
             job_id=job_id,
-            resume_text=str(state.get("resume_text") or ""),
+            resume_text=str(merged_state.get("resume_text") or ""),
             rubric=rubric_models,
-            enriched_contents=list(state.get("enriched_contents") or []),
-            processing_time_ms=state.get("processing_time_ms"),
-            identity_red_flags=list(state.get("identity_red_flags") or []),
-            profile_identity_cap_score=bool(state.get("profile_identity_cap_score")),
-            github_repo_analyses=state.get("github_repo_analyses"),
+            enriched_contents=list(merged_state.get("enriched_contents") or []),
+            processing_time_ms=merged_state.get("processing_time_ms"),
+            identity_red_flags=list(merged_state.get("identity_red_flags") or []),
+            profile_identity_cap_score=bool(merged_state.get("profile_identity_cap_score")),
+            github_repo_analyses=merged_state.get("github_repo_analyses"),
         )
     except (ValueError, TypeError) as exc:
         return {"ok": False, "errors": [str(exc)]}

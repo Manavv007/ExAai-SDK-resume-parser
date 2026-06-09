@@ -194,6 +194,65 @@ def build_rubric_bundle(jd_structured: JdStructured | dict[str, Any]) -> dict[st
     }
 
 
+_PLACEHOLDER_REQUIREMENT_LABELS = frozenset(
+    {
+        "requirement",
+        "role fit",
+        "fit",
+        "criterion",
+        "technical_skill",
+        "must_have",
+        "nice_to_have",
+    }
+)
+
+
+def resolve_session_rubric(state: dict[str, Any]) -> list[dict[str, str]]:
+    """Return rubric criteria from session state, rebuilding from JD when needed."""
+    rubric = state.get("rubric")
+    if isinstance(rubric, list) and rubric:
+        return [dict(item) for item in rubric if isinstance(item, dict)]
+
+    jd_structured = state.get("jd_structured")
+    if isinstance(jd_structured, dict) and jd_structured:
+        criteria = build_rubric(jd_structured)
+        if criteria:
+            return [c.to_dict() for c in criteria]
+
+    jd_raw = str(state.get("jd_raw") or "").strip()
+    if jd_raw:
+        from agent.tools.parser import parse_jd_structured
+
+        criteria = build_rubric(parse_jd_structured(jd_raw))
+        if criteria:
+            return [c.to_dict() for c in criteria]
+
+    return []
+
+
+def _is_placeholder_requirement_match(matches: list[dict[str, Any]]) -> bool:
+    if len(matches) != 1:
+        return False
+    label = str(matches[0].get("requirement") or "").strip().lower()
+    return label in _PLACEHOLDER_REQUIREMENT_LABELS or label.startswith("fit for role")
+
+
+def requirement_matches_need_rescore(
+    matches: Any,
+    rubric: list[dict[str, Any]],
+) -> bool:
+    """True when agent/scorer output is missing most rubric criteria."""
+    if not isinstance(matches, list) or not matches:
+        return True
+    if _is_placeholder_requirement_match(matches):
+        return True
+    if not rubric:
+        return False
+    if len(matches) < len(rubric):
+        return True
+    return False
+
+
 def _rubric_item_weight(item: Any) -> CriterionWeight:
     if isinstance(item, RubricCriterion):
         return item.weight

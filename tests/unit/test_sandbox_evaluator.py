@@ -34,6 +34,7 @@ def test_detect_project_and_command_plan_for_python(tmp_path: Path) -> None:
     assert quality["has_docs"] is True
     assert risk_flags == []
     assert repo_profile["project_shape"] == "python_project"
+    assert "sdk_or_library" in repo_profile["repo_type_tags"]
     assert "tests" in repo_profile["test_dirs"]
     assert repo_profile["dependency_health"]["dependency_count"] == 2
     assert repo_profile["dependency_health"]["pinned_versions"] is True
@@ -42,11 +43,8 @@ def test_detect_project_and_command_plan_for_python(tmp_path: Path) -> None:
     assert repo_profile["architecture"]["separation_of_concerns"] is True
     assert any(finding["category"] == "tests" for finding in findings)
     assert any(finding["category"] == "dependencies" for finding in findings)
-    assert commands == [
-        SandboxCommand(step="install", command='python -m pip install -e ".[dev]"'),
-        SandboxCommand(step="build", command="python -m compileall -q ."),
-        SandboxCommand(step="test", command="python -m pytest -q"),
-    ]
+    assert repo_profile["git_profile"]["history_is_shallow"] is False
+    assert commands == []
 
 
 def test_detect_project_and_command_plan_for_node(tmp_path: Path) -> None:
@@ -68,12 +66,9 @@ def test_detect_project_and_command_plan_for_node(tmp_path: Path) -> None:
     assert quality["dependency_files"] == ["package.json", "package-lock.json"]
     assert repo_profile["project_shape"] == "application"
     assert repo_profile["dependency_health"]["dependency_count"] == 0
+    assert "frontend_app" in repo_profile["repo_type_tags"]
     assert any("stack markers" in finding["title"].lower() for finding in findings)
-    assert commands == [
-        SandboxCommand(step="install", command="npm ci"),
-        SandboxCommand(step="build", command="npm run build"),
-        SandboxCommand(step="test", command="npm test -- --watch=false"),
-    ]
+    assert commands == []
 
 
 def test_detect_project_infers_node_dependency_health_and_architecture(tmp_path: Path) -> None:
@@ -160,11 +155,7 @@ def test_evaluate_repository_runs_detected_commands(
         (repo_dir / "tests" / "test_app.py").write_text("def test_ok(): pass\n", encoding="utf-8")
         return CommandResult(step="clone", command="git clone", ok=True, exit_code=0)
 
-    def fake_run(command: SandboxCommand, *, cwd: Path, timeout_seconds: int) -> CommandResult:
-        return CommandResult(step=command.step, command=command.command, ok=True, exit_code=0)
-
     monkeypatch.setattr("agent.sandbox.evaluator.main._clone_repo", fake_clone)
-    monkeypatch.setattr("agent.sandbox.evaluator.main.run_sandbox_command", fake_run)
 
     report = evaluate_repository(
         repo_url="https://github.com/owner/project",
@@ -174,15 +165,16 @@ def test_evaluate_repository_runs_detected_commands(
 
     assert report.clone_ok is True
     assert report.detected_stack == ["python"]
-    assert report.install_ok is True
-    assert report.build_ok is True
-    assert report.tests_ok is True
+    assert report.install_ok is None
+    assert report.build_ok is None
+    assert report.tests_ok is None
     assert report.quality_signals["has_tests"] is True
     assert report.provider == "cloud_run"
     assert report.repo_profile["project_shape"] == "application"
+    assert report.commands[-1].step == "inspect"
     assert report.confidence == "high"
     assert report.findings
     assert (
         "structured" in report.overall_assessment.lower()
-        or "completed cleanly" in report.overall_assessment.lower()
+        or "profiling signals" in report.overall_assessment.lower()
     )

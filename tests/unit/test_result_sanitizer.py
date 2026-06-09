@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from agent.tools.result_sanitizer import compact_metadata
+from agent.tools.result_sanitizer import compact_metadata, sanitize_requirement_matches
 from agent.tools.scorer import normalize_screening_result
 from agent.tools.validator import validate_result
 
@@ -74,6 +74,41 @@ def test_normalize_messy_llm_payload_passes_validation(test_settings) -> None:
     assert "title" not in normalized["sources_crawled"][0]
     assert "processing_time_ms" not in normalized["metadata"]
     assert "llm_calls" not in normalized["metadata"]
+
+
+def test_sanitize_replaces_placeholder_requirement_with_rubric_criterion() -> None:
+    rubric = [
+        {
+            "criterion": "Python programming",
+            "weight": "must_have",
+            "requirement_type": "technical_skill",
+        },
+        {
+            "criterion": "Git experience",
+            "weight": "nice_to_have",
+            "requirement_type": "technical_skill",
+        },
+    ]
+    sanitized = sanitize_requirement_matches(
+        [
+            {
+                "requirement": "requirement",
+                "requirement_type": "technical_skill",
+                "match_score": 90,
+                "evidence": "",
+            },
+            {
+                "requirement": "requirement",
+                "requirement_type": "technical_skill",
+                "match_score": 80,
+                "evidence": "Listed GitHub projects.",
+            },
+        ],
+        rubric,
+    )
+
+    assert sanitized[0]["requirement"] == "Python programming"
+    assert sanitized[1]["requirement"] == "Git experience"
 
 
 def test_compact_metadata_strips_null_optional_fields() -> None:

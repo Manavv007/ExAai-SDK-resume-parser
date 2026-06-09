@@ -13,8 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from agent.sandbox.base import SandboxCommand
-from agent.sandbox.evaluator.command_runner import run_sandbox_command  # noqa: F401
-from agent.sandbox.evaluator.detector import build_command_plan, detect_project
+from agent.sandbox.evaluator.detector import detect_project
 from agent.sandbox.evaluator.report_writer import write_report
 from agent.sandbox.models import CommandResult, RepoExecutionReport
 
@@ -27,7 +26,7 @@ def evaluate_repository(
     timeout_seconds: int = 300,
     commands: list[SandboxCommand] | None = None,
 ) -> RepoExecutionReport:
-    """Clone and evaluate one repository in the current Cloud Run job container."""
+    """Clone and profile one repository in the current Cloud Run job container."""
     workspace = Path(tempfile.mkdtemp(prefix="exaai-evaluator-"))
     repo_dir = workspace / "repo"
     command_results: list[CommandResult] = []
@@ -52,24 +51,32 @@ def evaluate_repository(
                 confidence="low",
             )
 
-        detected_stack, quality_signals, risk_flags, repo_profile, static_findings = detect_project(
-            repo_dir
+        detected_stack, quality_signals, risk_flags, repo_profile, static_findings = (
+            detect_project(repo_dir)
         )
-        command_plan = commands or build_command_plan(repo_dir)
-        for command in command_plan:
-            command_results.append(
+        if commands:
+            command_results.extend(
                 CommandResult(
                     step=command.step,
                     command=command.command,
                     ok=True,
                     exit_code=0,
                     duration_ms=0,
-                    stdout=f"Mock success for {command.step}: {command.command}",
+                    stdout=f"Compatibility no-op for {command.step}: {command.command}",
                     stderr="",
                     error=None,
                     failure_type=None,
                 )
+                for command in commands
             )
+        command_results.append(
+            CommandResult(
+                step="inspect",
+                command="profile repository",
+                ok=True,
+                duration_ms=0,
+            )
+        )
 
         findings = _build_execution_findings(
             static_findings,
@@ -90,7 +97,7 @@ def evaluate_repository(
             quality_signals=quality_signals,
             risk_flags=risk_flags,
             findings=findings,
-            timed_out=any(_timed_out(result) for result in command_results),
+            timed_out=False,
             summary=summary,
             overall_assessment=_build_overall_assessment(
                 detected_stack=detected_stack,
@@ -140,11 +147,11 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _clone_repo(repo_url: str, repo_dir: Path, *, timeout_seconds: int) -> CommandResult:
-    command = f"git clone --filter=blob:none {repo_url} {repo_dir}"
+    command = f"git clone --depth 200 --filter=blob:none {repo_url} {repo_dir}"
     started = time.monotonic()
     try:
         completed = subprocess.run(
-            ["git", "clone", "--filter=blob:none", repo_url, str(repo_dir)],
+            ["git", "clone", "--depth", "200", "--filter=blob:none", repo_url, str(repo_dir)],
             check=False,
             capture_output=True,
             text=True,
@@ -213,12 +220,12 @@ def _timed_out(result: CommandResult) -> bool:
 def _build_summary(results: list[CommandResult]) -> str:
     failed = [result for result in results if not result.ok]
     if not failed:
-        return "Repository cloned and the sandbox completed install/build/test checks successfully."
+        return "Repository cloned and repository profiling completed successfully."
     if any(result.step == "clone" for result in failed):
         return "Repository clone failed before evaluator checks could run."
     key_failure = failed[0]
     return (
-        "Repository cloned, but sandbox evaluation found a problem during "
+        "Repository cloned, but repository profiling found a problem during "
         f"{key_failure.step} ({key_failure.failure_type or 'unknown failure'})."
     )
 
@@ -233,15 +240,16 @@ def _build_execution_findings(
 
     for result in command_results:
         if result.ok:
-            if result.step == "test":
+            if result.step == "inspect":
                 findings.append(
                     {
                         "severity": "info",
-                        "category": "tests",
-                        "title": "Automated tests passed in the sandbox.",
+                        "category": "structure",
+                        "title": "Repository profiling completed in the sandbox.",
                         "evidence": f"{result.command} exited with code 0.",
                         "impact": (
-                            "Improves confidence that the checked-in code is currently working."
+                            "Provides deterministic repo-local evidence without "
+                            "running installs or tests."
                         ),
                     }
                 )
@@ -352,31 +360,9 @@ def _build_overall_assessment(
     findings: list[dict[str, str]],
     command_results: list[CommandResult],
 ) -> str:
-    failing_tests = any(
-        result.failure_type == "test_failure" and result.command != "skipped"
-        for result in command_results
-    )
-    failed_install = any(
-        result.failure_type
-        in {"install_failure", "dependency_build_failure", "missing_system_dependency"}
-        for result in command_results
-    )
     shape = repo_profile.get("project_shape", "project")
     markers = ", ".join(repo_profile.get("framework_markers", [])) or "no strong framework markers"
     stack = ", ".join(detected_stack) or "unknown stack"
-
-    if failing_tests:
-        return (
-            f"This looks like a non-trivial {shape} in {stack} with {markers}, "
-            "but the candidate's own automated tests fail in the sandbox, "
-            "which is a meaningful quality concern."
-        )
-    if failed_install:
-        return (
-            f"This repo looks like a {shape} in {stack}, but setup is brittle "
-            "enough that dependency installation failed, "
-            "so we only have limited confidence in its production readiness."
-        )
     high_findings = sum(1 for finding in findings if finding.get("severity") == "high")
     if high_findings:
         return (
@@ -385,7 +371,7 @@ def _build_overall_assessment(
         )
     return (
         f"This repo appears to be a structured {shape} in {stack} with {markers}, "
-        "and the sandbox checks that were available completed cleanly."
+        "and the repo-local profiling signals look coherent."
     )
 
 
@@ -394,13 +380,10 @@ def _build_confidence(
     command_results: list[CommandResult],
 ) -> str:
     has_tests = bool(quality_signals.get("has_tests"))
-    tests_ran = any(
-        result.step == "test" and result.command != "skipped" for result in command_results
-    )
-    install_ok = any(result.step == "install" and result.ok for result in command_results)
-    if has_tests and tests_ran and install_ok:
+    profiled = any(result.step == "inspect" and result.ok for result in command_results)
+    if has_tests and profiled:
         return "high"
-    if install_ok or has_tests:
+    if profiled or has_tests:
         return "medium"
     return "low"
 

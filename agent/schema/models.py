@@ -74,6 +74,15 @@ class CrawledSource(BaseModel):
     title: str | None = None
 
 
+class LlmCallTraceEntry(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    n: int = Field(ge=1)
+    source: str = Field(min_length=1)
+    model: str = Field(min_length=1)
+    ts_ms: int = Field(ge=0)
+
+
 class ScreeningMetadata(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -85,6 +94,7 @@ class ScreeningMetadata(BaseModel):
     processing_time_ms: int | None = Field(default=None, ge=0)
     job_desc_version: str | None = None
     llm_calls: int | None = Field(default=None, ge=0)
+    llm_call_trace: list[LlmCallTraceEntry] | None = None
     agent_submit_fallback: bool | None = None
     screening_mode: Literal["pipeline", "agent"] | None = None
 

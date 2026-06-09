@@ -93,7 +93,7 @@ def test_score_repo_relevance() -> None:
     assert score > 20.0
 
 
-def test_select_static_repos_prefers_resume_order_over_ranking() -> None:
+def test_select_static_repos_uses_all_resolved_resume_repos() -> None:
     api_repo = RepoMeta(
         name="api-service",
         owner="testuser",
@@ -119,10 +119,10 @@ def test_select_static_repos_prefers_resume_order_over_ranking() -> None:
         updated_at="2026-06-06T12:00:00Z",
     )
     settings = MagicMock()
-    settings.sandbox_max_resume_repos = 5
+    settings.sandbox_max_resume_repos = 10
 
     selected, mode = _select_static_repos(
-        all_repos=[web_repo, api_repo],
+        resolved_resume_repos=[api_repo, web_repo],
         ranked_repos=[web_repo, api_repo],
         resume_repo_urls=[
             "https://github.com/testuser/api-service",
@@ -132,6 +132,66 @@ def test_select_static_repos_prefers_resume_order_over_ranking() -> None:
     )
 
     assert [repo.name for repo in selected] == ["api-service", "web-app"]
+    assert mode == "resume_repos"
+
+
+@pytest.mark.asyncio
+async def test_resolve_resume_repos_fetches_missing_from_api() -> None:
+    from agent.tools.github_analyzer import _resolve_resume_repos_for_analysis
+
+    listed_repo = RepoMeta(
+        name="listed",
+        owner="testuser",
+        url="https://github.com/testuser/listed",
+        description=None,
+        language="Python",
+        stars=1,
+        forks=0,
+        is_fork=False,
+        default_branch="main",
+        updated_at="2026-06-06T12:00:00Z",
+    )
+    fetched_repo = RepoMeta(
+        name="resume-only",
+        owner="testuser",
+        url="https://github.com/testuser/resume-only",
+        description=None,
+        language="Go",
+        stars=2,
+        forks=0,
+        is_fork=False,
+        default_branch="main",
+        updated_at="2026-06-06T12:00:00Z",
+    )
+    client = MagicMock()
+    client.get_repo_meta = AsyncMock(return_value=fetched_repo)
+    settings = MagicMock()
+    settings.sandbox_max_resume_repos = 10
+
+    resolved = await _resolve_resume_repos_for_analysis(
+        client=client,
+        all_repos=[listed_repo],
+        resume_repo_urls=[
+            "https://github.com/testuser/listed",
+            "https://github.com/testuser/resume-only",
+        ],
+        settings=settings,
+    )
+
+    assert [repo.name for repo in resolved] == ["listed", "resume-only"]
+    client.get_repo_meta.assert_awaited_once_with("testuser", "resume-only")
+
+
+def test_select_sandbox_repo_urls_includes_six_resume_repos() -> None:
+    settings = MagicMock()
+    settings.sandbox_max_resume_repos = 12
+    six_urls = [f"https://github.com/testuser/repo{i}" for i in range(1, 7)]
+    selected, mode = _select_sandbox_repo_urls(
+        ranked_repos=[],
+        resume_repo_urls=six_urls,
+        settings=settings,
+    )
+    assert selected == six_urls
     assert mode == "resume_repos"
 
 
@@ -168,6 +228,16 @@ def test_select_sandbox_repo_urls_uses_all_resume_repos_before_fallback() -> Non
         "https://github.com/testuser/two",
     ]
     assert mode == "resume_repos"
+
+    settings.sandbox_max_resume_repos = 10
+    five_urls = [f"https://github.com/testuser/project{i}" for i in range(1, 6)]
+    all_five, five_mode = _select_sandbox_repo_urls(
+        ranked_repos=ranked_repos,
+        resume_repo_urls=five_urls,
+        settings=settings,
+    )
+    assert all_five == five_urls
+    assert five_mode == "resume_repos"
 
     fallback, fallback_mode = _select_sandbox_repo_urls(
         ranked_repos=ranked_repos,
@@ -210,6 +280,38 @@ async def test_evaluate_sandbox_repos_runs_provider_in_parallel() -> None:
 
 
 @pytest.mark.asyncio
+async def test_evaluate_sandbox_repos_preserves_fast_results_on_batch_timeout() -> None:
+    class MixedSpeedProvider:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        async def evaluate_repo(self, *, repo_url, repo_name, commands):
+            self.calls.append(repo_url)
+            if repo_url.endswith("/slow"):
+                await asyncio.sleep(1)
+            return RepoExecutionReport(repo=repo_name, url=repo_url, clone_ok=True)
+
+    settings = MagicMock()
+    settings.sandbox_provider = "cloud_run"
+    settings.sandbox_wait_seconds = 0.05
+    provider = MixedSpeedProvider()
+
+    with patch("agent.sandbox.providers.create_sandbox_provider", return_value=provider):
+        reports = await _evaluate_sandbox_repos(
+            [
+                "https://github.com/testuser/fast",
+                "https://github.com/testuser/slow",
+            ],
+            settings,
+            _retry_pass=1,
+        )
+
+    assert reports[0]["clone_ok"] is True
+    assert reports[0]["repo"] == "testuser/fast"
+    assert reports[1]["timed_out"] is True
+
+
+@pytest.mark.asyncio
 async def test_evaluate_sandbox_repos_returns_timeout_reports() -> None:
     class SlowProvider:
         async def evaluate_repo(self, *, repo_url, repo_name, commands):
@@ -246,7 +348,7 @@ async def test_evaluate_sandbox_repos_returns_timeout_reports() -> None:
             "overall_assessment": "",
             "confidence": "low",
             "timed_out": True,
-            "skipped_reason": "Sandbox wait budget exceeded after 0.01s.",
+            "skipped_reason": "Sandbox wait budget exceeded after 0s.",
         }
     ]
 
@@ -504,6 +606,79 @@ async def test_analyze_github_repos_attaches_sandbox_reports() -> None:
     assert analysis["sandbox_reports"] == sandbox_reports
     assert analysis["repo_selection_mode"] == "resume_repos"
     mock_sandbox.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_analyze_github_repos_deferred_skips_inline_sandbox_wait() -> None:
+    mock_repos = [
+        RepoMeta(
+            name="repo1",
+            owner="testuser",
+            url="https://github.com/testuser/repo1",
+            description="A Python project",
+            language="Python",
+            stars=1,
+            forks=0,
+            is_fork=False,
+            default_branch="main",
+            updated_at="2026-06-06T12:00:00Z",
+        )
+    ]
+
+    with (
+        patch(
+            "agent.tools.github_client.GitHubClient.get_user_repos", new_callable=AsyncMock
+        ) as mock_get_repos,
+        patch(
+            "agent.tools.github_client.GitHubClient.get_user_events", new_callable=AsyncMock
+        ) as mock_get_events,
+        patch(
+            "agent.tools.github_analyzer._analyze_single_repo", new_callable=AsyncMock
+        ) as mock_analyze_repo,
+        patch(
+            "agent.tools.github_analyzer._evaluate_sandbox_repos", new_callable=AsyncMock
+        ) as mock_sandbox,
+        patch("agent.tools.github_analyzer.get_settings") as mock_get_settings,
+    ):
+        mock_settings = MagicMock()
+        mock_settings.github_analysis_enabled = True
+        mock_settings.github_llm_summary_enabled = False
+        mock_settings.github_clone_analysis_enabled = True
+        mock_settings.sandbox_max_resume_repos = 5
+        mock_settings.sandbox_max_profile_repos = 2
+        mock_settings.max_repos_to_analyze = 3
+        mock_settings.github_content_token_cap = 12000
+        mock_get_settings.return_value = mock_settings
+
+        mock_get_repos.return_value = mock_repos
+        mock_get_events.return_value = []
+        from agent.tools.github_analyzer import RepoAnalysis
+
+        mock_analyze_repo.return_value = RepoAnalysis(
+            name="repo1",
+            url="https://github.com/testuser/repo1",
+            description="A Python project",
+            languages={"Python": 100.0},
+            stars=1,
+            is_fork=False,
+            project_type="codebase",
+            has_tests=True,
+            has_ci=False,
+            has_docs=True,
+            has_docker=False,
+            dependency_summary="pytest",
+        )
+
+        analysis = await analyze_github_repos(
+            "testuser",
+            ["https://github.com/testuser/repo1"],
+            {"job_title": "Python Engineer"},
+            sandbox_mode="deferred",
+        )
+
+    assert analysis["selected_sandbox_repo_urls"] == ["https://github.com/testuser/repo1"]
+    assert analysis["sandbox_reports"] == []
+    mock_sandbox.assert_not_awaited()
 
 
 def test_analyze_collaboration() -> None:

@@ -118,7 +118,14 @@ async def analyze_github(tool_context: ToolContext) -> dict[str, Any]:
     try:
         profile_urls = tool_context.state.get("profile_urls") or []
         jd_structured = tool_context.state.get("jd_structured") or {}
-        analysis = await analyze_github_repos(github_username, profile_urls, jd_structured)
+        from agent.sandbox_gating import sandbox_mode_for_settings
+
+        analysis = await analyze_github_repos(
+            github_username,
+            profile_urls,
+            jd_structured,
+            sandbox_mode=sandbox_mode_for_settings(),
+        )
         tool_context.state["github_repo_analyses"] = analysis
         return {
             "ok": True,
