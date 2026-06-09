@@ -235,6 +235,7 @@ def normalize_screening_result(
     processing_time_ms: int | None = None,
     identity_red_flags: list[dict[str, str]] | None = None,
     profile_identity_cap_score: bool = False,
+    github_repo_analyses: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Map model output onto the platform contract and apply score caps."""
     settings = get_settings()
@@ -334,6 +335,9 @@ def normalize_screening_result(
         "errors": raw.get("errors") or [],
     }
 
+    if github_repo_analyses and github_repo_analyses.get("sandbox_reports"):
+        result["temp_sandbox_reports"] = github_repo_analyses.get("sandbox_reports")
+
     if result["resume_screening_status"] not in ("completed", "failed"):
         result["resume_screening_status"] = "completed"
 
@@ -431,6 +435,7 @@ def score_screening(
                 processing_time_ms=processing_time_ms,
                 identity_red_flags=identity_red_flags,
                 profile_identity_cap_score=profile_identity_cap_score,
+                github_repo_analyses=github_repo_analyses,
             )
             outcome = validate_result_detailed(normalized)
             if outcome.ok:

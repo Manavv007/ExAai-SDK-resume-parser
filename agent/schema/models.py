@@ -2,7 +2,7 @@
 
 from datetime import datetime
 from enum import StrEnum
-from typing import Literal
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -114,6 +114,7 @@ class ResumeScreeningResult(BaseModel):
     recommendation_reasoning: str | None = None
     red_flags: list[RedFlag] = Field(default_factory=list)
     sources_crawled: list[CrawledSource] = Field(default_factory=list)
+    temp_sandbox_reports: list[dict[str, Any]] | None = None
 
     @field_validator("recommendation_reasoning")
     @classmethod
