@@ -19,6 +19,14 @@ DEFAULT_GROQ_AGENT_MODEL = "groq/llama-3.3-70b-versatile"
 OPENROUTER_FREE_ROUTERS = frozenset({"openrouter/free", "free"})
 LITELLM_PROVIDERS = frozenset({"openrouter", "groq"})
 
+
+def llm_temperature(settings: Settings | None = None) -> float:
+    """Sampling temperature for structured JSON / scoring calls."""
+    from agent.config import get_settings
+
+    return float((settings or get_settings()).llm_temperature)
+
+
 _llm_call_state = threading.local()
 
 
@@ -133,10 +141,17 @@ def openrouter_agent_model_id(settings: Settings) -> str:
 def effective_max_agent_turns(settings: Settings) -> int:
     """Cap agent LLM round-trips on rate-limited free tiers (Groq RPM, OpenRouter free)."""
     if resolve_llm_provider(settings) == "groq":
-        return min(settings.max_agent_turns, settings.groq_max_agent_turns)
-    if is_openrouter_free_tier(settings, for_agent=True):
-        return min(settings.max_agent_turns, settings.openrouter_free_max_agent_turns)
-    return settings.max_agent_turns
+        base = min(settings.max_agent_turns, settings.groq_max_agent_turns)
+    elif is_openrouter_free_tier(settings, for_agent=True):
+        base = min(settings.max_agent_turns, settings.openrouter_free_max_agent_turns)
+    else:
+        base = settings.max_agent_turns
+    if (
+        str(settings.screening_mode).strip().lower() == "agent"
+        and settings.agent_evidence_orchestration_enabled
+    ):
+        base = max(base, 12)
+    return base
 
 
 def openrouter_model_id(settings: Settings) -> str:
@@ -316,29 +331,108 @@ def classify_llm_error(exc: BaseException) -> tuple[str, str]:
     return ("LLM_ERROR", str(exc))
 
 
+def gemini_vertex_active(settings: Settings | None = None) -> bool:
+    """True when Gemini calls should use Vertex AI (ADC) instead of AI Studio API key."""
+    from agent.config import get_settings
+
+    return bool((settings or get_settings()).gemini_use_vertexai)
+
+
+def gemini_configured(settings: Settings | None = None) -> bool:
+    """True when Gemini provider can run (API key or Vertex project/region)."""
+    from agent.config import get_settings, resolve_vertex_gcp_project
+
+    resolved = settings or get_settings()
+    if gemini_vertex_active(resolved):
+        return bool(resolve_vertex_gcp_project(resolved) and resolved.gcp_region.strip())
+    return bool(resolved.gemini_api_key.strip())
+
+
 def gemini_key_suffix(settings: Settings | None = None) -> str:
     """Last 4 chars of the active Gemini key (for health checks, not logging full secrets)."""
     from agent.config import get_settings
 
-    key = (settings or get_settings()).gemini_api_key.strip()
+    from agent.config import resolve_vertex_gcp_project
+
+    resolved = settings or get_settings()
+    if gemini_vertex_active(resolved):
+        project = resolve_vertex_gcp_project(resolved)
+        return project[-4:] if len(project) >= 4 else "vert"
+    key = resolved.gemini_api_key.strip()
     return key[-4:] if len(key) >= 4 else "****"
+
+
+def create_genai_client(settings: Settings | None = None) -> Any:
+    """google-genai Client for AI Studio (API key) or Vertex AI (ADC)."""
+    from agent.config import get_settings
+
+    from agent.config import resolve_vertex_gcp_project
+
+    resolved = settings or get_settings()
+    from google import genai
+
+    if gemini_vertex_active(resolved):
+        from agent.gcp_credentials import load_gcp_credentials
+
+        project = resolve_vertex_gcp_project(resolved)
+        location = resolved.gcp_region.strip()
+        if not project or not location:
+            raise RuntimeError(
+                "GEMINI_USE_VERTEXAI=true requires VERTEX_GCP_PROJECT_ID (or "
+                "GCP_PROJECT_ID) and GCP_REGION"
+            )
+        credentials = load_gcp_credentials(
+            settings_path=resolved.vertex_google_application_credentials,
+        )
+        return genai.Client(
+            vertexai=True,
+            project=project,
+            location=location,
+            credentials=credentials,
+        )
+
+    api_key = resolved.gemini_api_key.strip()
+    if not api_key:
+        raise RuntimeError("GEMINI_API_KEY is not configured")
+    return genai.Client(api_key=api_key)
 
 
 def sync_llm_env(settings: Settings) -> None:
     """Expose API keys to google-genai / LiteLLM via process environment."""
-    gemini_key = settings.gemini_api_key.strip()
-    if gemini_key:
-        # google-genai prefers GOOGLE_API_KEY when both are set; keep them identical.
-        os.environ["GEMINI_API_KEY"] = gemini_key
-        os.environ["GOOGLE_API_KEY"] = gemini_key
+    if gemini_vertex_active(settings):
+        from agent.config import resolve_vertex_gcp_project
+
+        project = resolve_vertex_gcp_project(settings)
+        location = settings.gcp_region.strip()
+        os.environ["GOOGLE_GENAI_USE_VERTEXAI"] = "1"
+        if project:
+            os.environ["GOOGLE_CLOUD_PROJECT"] = project
+        if location:
+            os.environ["GOOGLE_CLOUD_LOCATION"] = location
+        # Vertex ADC and API keys are mutually exclusive in google-genai.
+        os.environ.pop("GEMINI_API_KEY", None)
+        os.environ.pop("GOOGLE_API_KEY", None)
         logger.info(
-            "Gemini credentials synced from .env (suffix …%s, model=%s)",
-            gemini_key_suffix(settings),
+            "Gemini Vertex AI env synced (project=%s, location=%s, model=%s)",
+            project or "?",
+            location or "?",
             settings.gemini_model_id,
         )
     else:
-        os.environ.pop("GEMINI_API_KEY", None)
-        os.environ.pop("GOOGLE_API_KEY", None)
+        os.environ.pop("GOOGLE_GENAI_USE_VERTEXAI", None)
+        gemini_key = settings.gemini_api_key.strip()
+        if gemini_key:
+            # google-genai prefers GOOGLE_API_KEY when both are set; keep them identical.
+            os.environ["GEMINI_API_KEY"] = gemini_key
+            os.environ["GOOGLE_API_KEY"] = gemini_key
+            logger.info(
+                "Gemini credentials synced from .env (suffix …%s, model=%s)",
+                gemini_key_suffix(settings),
+                settings.gemini_model_id,
+            )
+        else:
+            os.environ.pop("GEMINI_API_KEY", None)
+            os.environ.pop("GOOGLE_API_KEY", None)
 
     openrouter_key = settings.open_router_api_key.strip()
     if openrouter_key:
@@ -412,8 +506,11 @@ def create_adk_model(settings: Settings) -> Any:
         if api_base:
             litellm_kwargs["api_base"] = api_base
         return CountingLiteLlm(**litellm_kwargs)
-    if not settings.gemini_api_key.strip():
-        raise RuntimeError("GEMINI_API_KEY is not configured")
+    if not gemini_configured(settings):
+        raise RuntimeError(
+            "Gemini is not configured: set GEMINI_API_KEY or "
+            "GEMINI_USE_VERTEXAI=true with VERTEX_GCP_PROJECT_ID and GCP_REGION"
+        )
     return settings.gemini_model_id
 
 
@@ -425,7 +522,8 @@ def model_version_label(settings: Settings, *, for_agent: bool = False) -> str:
         else:
             model = scoring_model_id_for_provider(settings, provider)
         return f"exaai-adk/{model}"
-    return f"exaai-adk/{settings.gemini_model_id}"
+    prefix = "exaai-adk/vertex" if gemini_vertex_active(settings) else "exaai-adk"
+    return f"{prefix}/{settings.gemini_model_id}"
 
 
 def _litellm_response_format(
@@ -537,7 +635,7 @@ def _generate_json_via_litellm(
             schema_name="scoring_response",
             schema=_scoring_response_schema(),
         ),
-        temperature=0.1,
+        temperature=llm_temperature(settings),
         max_tokens=8192,
     )
     return _parse_json_response(_message_text_from_litellm_response(response))
@@ -571,7 +669,7 @@ def complete_json_for_provider(
             schema_name=schema_name,
             schema=schema,
         ),
-        temperature=0.1,
+        temperature=llm_temperature(settings),
         max_tokens=max_tokens,
     )
     return json.loads(_message_text_from_litellm_response(response))
@@ -604,8 +702,16 @@ def _litellm_fallback_providers(settings: Settings) -> list[str]:
 
 def _providers_to_try_for_scoring(settings: Settings) -> list[str]:
     """Primary provider first, then other configured LiteLLM providers."""
+    if is_gemini_rate_limited():
+        ordered: list[str] = []
+        if settings.groq_api_key.strip():
+            ordered.append("groq")
+        if settings.open_router_api_key.strip():
+            ordered.append("openrouter")
+        return ordered
+
     primary = resolve_llm_provider(settings)
-    ordered: list[str] = []
+    ordered = []
     for candidate in (primary, *_litellm_fallback_providers(settings)):
         if candidate in LITELLM_PROVIDERS and candidate not in ordered:
             ordered.append(candidate)
@@ -619,19 +725,21 @@ def _generate_json_with_litellm_fallbacks(
 ) -> dict[str, Any]:
     import time
 
+    providers = _providers_to_try_for_scoring(settings)
     last_exc: BaseException | None = None
-    for provider in _providers_to_try_for_scoring(settings):
+    for idx, provider in enumerate(providers):
         try:
             return _generate_json_via_litellm(contents, settings=settings, provider=provider)
         except Exception as exc:
             last_exc = exc
-            if not is_rate_limit_error(exc):
-                raise
+            if idx + 1 >= len(providers):
+                break
             logger.warning(
-                "%s scoring rate-limited on all models; trying next provider",
+                "%s scoring failed (%s); trying next provider",
                 provider,
+                exc,
             )
-            time.sleep(2.0)
+            time.sleep(1.0)
     if last_exc is not None:
         raise last_exc
     raise RuntimeError("LiteLLM scoring failed without an exception")
@@ -658,14 +766,16 @@ def generate_json(prompt: str, *, correction: str | None = None) -> dict[str, An
 
     import time
 
-    from google import genai
     from google.genai import types
     from google.genai.errors import APIError, ServerError
 
-    if not settings.gemini_api_key.strip():
-        raise RuntimeError("GEMINI_API_KEY is not configured")
+    if not gemini_configured(settings):
+        raise RuntimeError(
+            "Gemini is not configured: set GEMINI_API_KEY or "
+            "GEMINI_USE_VERTEXAI=true with GCP_PROJECT_ID and GCP_REGION"
+        )
 
-    client = genai.Client(api_key=settings.gemini_api_key)
+    client = create_genai_client(settings)
 
     response = None
     last_gemini_error: BaseException | None = None
@@ -680,7 +790,7 @@ def generate_json(prompt: str, *, correction: str | None = None) -> dict[str, An
                     response_mime_type="application/json",
                     response_json_schema=_scoring_response_schema(),
                     max_output_tokens=8192,
-                    temperature=0.1,
+                    temperature=llm_temperature(settings),
                 ),
             )
             break
@@ -701,16 +811,27 @@ def generate_json(prompt: str, *, correction: str | None = None) -> dict[str, An
         return _parse_json_response(response.text or "")
 
     if last_gemini_error and is_rate_limit_error(last_gemini_error):
+        last_exc: BaseException = last_gemini_error
         for fallback_provider in _litellm_fallback_providers(settings):
-            logger.warning(
-                "Gemini quota/rate limit exhausted; falling back to %s for scoring",
-                fallback_provider,
-            )
-            return _generate_json_via_litellm(
-                contents,
-                settings=settings,
-                provider=fallback_provider,
-            )
+            try:
+                logger.warning(
+                    "Gemini quota/rate limit exhausted; falling back to %s for scoring",
+                    fallback_provider,
+                )
+                return _generate_json_via_litellm(
+                    contents,
+                    settings=settings,
+                    provider=fallback_provider,
+                )
+            except Exception as exc:
+                last_exc = exc
+                logger.warning(
+                    "%s scoring fallback failed (%s); trying next provider",
+                    fallback_provider,
+                    exc,
+                )
+                time.sleep(2.0)
+        raise last_exc
 
     if last_gemini_error is not None:
         raise last_gemini_error

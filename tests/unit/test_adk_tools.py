@@ -1,7 +1,9 @@
 import asyncio
 import json
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 from agent.adk_tools import (
     fetch_profile_content,
@@ -310,12 +312,14 @@ def _llm_scoring_payload(**overrides) -> dict:
     return payload
 
 
-def test_submit_screening_result_accepts_valid_fixture() -> None:
+@pytest.mark.asyncio
+async def test_submit_screening_result_accepts_valid_fixture() -> None:
     fixture = json.loads((FIXTURES / "valid_result_completed.json").read_text(encoding="utf-8"))
     ctx = MagicMock()
     ctx.state = _base_session_state()
 
-    result = submit_screening_result(fixture, ctx)
+    with patch("agent.adk_tools.await_sandbox_for_scoring", new_callable=AsyncMock):
+        result = await submit_screening_result(fixture, ctx)
 
     assert result["ok"] is True
     assert "screening_result" in ctx.state
@@ -325,11 +329,13 @@ def test_submit_screening_result_accepts_valid_fixture() -> None:
     assert validate_result(stored)
 
 
-def test_submit_screening_result_accepts_llm_shape() -> None:
+@pytest.mark.asyncio
+async def test_submit_screening_result_accepts_llm_shape() -> None:
     ctx = MagicMock()
     ctx.state = _base_session_state()
 
-    result = submit_screening_result(_llm_scoring_payload(), ctx)
+    with patch("agent.adk_tools.await_sandbox_for_scoring", new_callable=AsyncMock):
+        result = await submit_screening_result(_llm_scoring_payload(), ctx)
 
     assert result["ok"] is True
     stored = ctx.state["screening_result"]
@@ -338,18 +344,21 @@ def test_submit_screening_result_accepts_llm_shape() -> None:
     assert validate_result(stored)
 
 
-def test_submit_screening_result_rejects_bad_session_uuids() -> None:
+@pytest.mark.asyncio
+async def test_submit_screening_result_rejects_bad_session_uuids() -> None:
     ctx = MagicMock()
     ctx.state = _base_session_state(application_id="not-a-uuid", job_id=JOB_ID)
 
-    result = submit_screening_result(_llm_scoring_payload(), ctx)
+    with patch("agent.adk_tools.await_sandbox_for_scoring", new_callable=AsyncMock):
+        result = await submit_screening_result(_llm_scoring_payload(), ctx)
 
     assert result["ok"] is False
     assert any("uuid" in err.lower() for err in result["errors"])
     assert "screening_result" not in ctx.state
 
 
-def test_submit_screening_result_sanitizes_invalid_requirement_type() -> None:
+@pytest.mark.asyncio
+async def test_submit_screening_result_sanitizes_invalid_requirement_type() -> None:
     ctx = MagicMock()
     ctx.state = _base_session_state()
     bad = _llm_scoring_payload(
@@ -363,7 +372,8 @@ def test_submit_screening_result_sanitizes_invalid_requirement_type() -> None:
         ]
     )
 
-    result = submit_screening_result(bad, ctx)
+    with patch("agent.adk_tools.await_sandbox_for_scoring", new_callable=AsyncMock):
+        result = await submit_screening_result(bad, ctx)
 
     assert result["ok"] is True
     stored = ctx.state["screening_result"]
@@ -387,7 +397,7 @@ def test_submit_screening_result_applies_must_have_cap() -> None:
     outcome = process_screening_submission(state, raw)
 
     assert outcome["ok"] is True
-    assert outcome["screening_result"]["resume_similarity_score"]["score"] == 40
+    assert outcome["screening_result"]["resume_similarity_score"]["score"] == 30
 
 
 def test_submit_screening_result_applies_identity_cap() -> None:
@@ -420,7 +430,7 @@ def test_submit_screening_result_identity_cap_when_rubric_weak() -> None:
     outcome = process_screening_submission(state, raw)
 
     assert outcome["ok"] is True
-    assert outcome["screening_result"]["resume_similarity_score"]["score"] == 40
+    assert outcome["screening_result"]["resume_similarity_score"]["score"] == 25
 
 
 def test_submit_screening_result_includes_temp_sandbox_reports() -> None:

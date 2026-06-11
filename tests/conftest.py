@@ -15,6 +15,8 @@ def _test_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("EXA_API_KEY", "test-exa")
     monkeypatch.setenv("API_KEYS", "test-key")
     monkeypatch.setenv("LLM_PROVIDER", "gemini")
+    monkeypatch.setenv("SCREENING_MODE", "pipeline")
+    monkeypatch.setenv("AGENT_EVIDENCE_ORCHESTRATION_ENABLED", "false")
     monkeypatch.setenv("SCREENING_RESULT_STORE_PATH", str(tmp_path / "screening-results"))
     get_settings.cache_clear()
     from agent.llm_client import reset_llm_call_count

@@ -92,7 +92,7 @@ def has_glob(repo_dir: Path, *patterns: str) -> bool:
 
 def read_text_if_exists(path: Path) -> str:
     try:
-        return path.read_text(encoding="utf-8")
+        return path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return ""
 
@@ -145,7 +145,82 @@ def collect_source_files(repo_dir: Path, *, include_tests: bool = False) -> list
     return files
 
 
-def collect_sample_files(repo_dir: Path) -> list[dict[str, Any]]:
+def _sample_entry(
+    repo_dir: Path,
+    rel_path: str,
+    *,
+    max_lines: int,
+    source: str,
+    requested_path: str | None = None,
+) -> dict[str, Any]:
+    from agent.tools.repo_focus import classify_content_quality
+
+    path = repo_dir / rel_path
+    if not path.is_file():
+        return {
+            "path": rel_path,
+            "lines": 0,
+            "content_preview": "",
+            "max_lines": max_lines,
+            "source": source,
+            "requested_path": requested_path or rel_path,
+            "content_status": "missing",
+            "substituted": bool(requested_path and requested_path != rel_path),
+        }
+
+    content = read_text_if_exists(path)
+    lines = content.splitlines()
+    preview_limit = max(10, min(max_lines, MAX_SAMPLE_PREVIEW_LINES * 4))
+    return {
+        "path": rel_path,
+        "lines": len(lines),
+        "content_preview": "\n".join(lines[:preview_limit]),
+        "max_lines": max_lines,
+        "source": source,
+        "requested_path": requested_path or rel_path,
+        "content_status": classify_content_quality(content),
+        "substituted": bool(requested_path and requested_path != rel_path),
+    }
+
+
+def collect_focused_sample_files(
+    repo_dir: Path,
+    focus_spec: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """Collect file excerpts from mandatory, agent, and heuristic focus paths."""
+    spec = focus_spec if isinstance(focus_spec, dict) else {}
+    max_files = int(spec.get("max_files") or MAX_SAMPLE_FILES)
+    focus_paths = spec.get("focus_paths") if isinstance(spec.get("focus_paths"), list) else []
+
+    sample_files: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    for item in focus_paths:
+        if not isinstance(item, dict):
+            continue
+        rel_path = str(item.get("path") or "").replace("\\", "/").lstrip("./")
+        if not rel_path or rel_path in seen:
+            continue
+        seen.add(rel_path)
+        sample_files.append(
+            _sample_entry(
+                repo_dir,
+                rel_path,
+                max_lines=int(item.get("max_lines") or MAX_SAMPLE_PREVIEW_LINES),
+                source=str(item.get("source") or "focus"),
+                requested_path=str(item.get("requested_path") or rel_path),
+            )
+        )
+        if len(sample_files) >= max_files:
+            return sample_files
+
+    if sample_files:
+        return sample_files
+
+    return _collect_largest_sample_files(repo_dir, max_files=max_files)
+
+
+def _collect_largest_sample_files(repo_dir: Path, *, max_files: int = MAX_SAMPLE_FILES) -> list[dict[str, Any]]:
     files = collect_source_files(repo_dir)
     if not files:
         return []
@@ -159,21 +234,29 @@ def collect_sample_files(repo_dir: Path) -> list[dict[str, Any]]:
 
     files_with_size.sort(key=lambda item: item[1], reverse=True)
     sample_files: list[dict[str, Any]] = []
-    for path, _size in files_with_size[:MAX_SAMPLE_FILES]:
-        content = read_text_if_exists(path)
-        lines = content.splitlines()
+    for path, _size in files_with_size[:max_files]:
         try:
             rel_path = str(path.relative_to(repo_dir)).replace("\\", "/")
         except ValueError:
             rel_path = str(path).replace("\\", "/")
         sample_files.append(
-            {
-                "path": rel_path,
-                "lines": len(lines),
-                "content_preview": "\n".join(lines[:MAX_SAMPLE_PREVIEW_LINES]),
-            }
+            _sample_entry(
+                repo_dir,
+                rel_path,
+                max_lines=MAX_SAMPLE_PREVIEW_LINES,
+                source="largest_files",
+            )
         )
     return sample_files
+
+
+def collect_sample_files(
+    repo_dir: Path,
+    focus_spec: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    if focus_spec:
+        return collect_focused_sample_files(repo_dir, focus_spec)
+    return _collect_largest_sample_files(repo_dir)
 
 
 def parse_python_dependencies(repo_dir: Path) -> list[str]:

@@ -16,6 +16,7 @@ def calculate_git_metrics(repo_dir: Path) -> dict[str, Any]:
         "days_since_last_commit": 0,
         "top_author_commit_share": 0.0,
         "sole_author": False,
+        "merge_to_commit_ratio": 0.0,
         "history_is_shallow": bool((repo_dir / ".git" / "shallow").exists()),
     }
     if not (repo_dir / ".git").exists():
@@ -60,6 +61,25 @@ def calculate_git_metrics(repo_dir: Path) -> dict[str, Any]:
         if res_time.returncode == 0 and res_time.stdout.strip():
             commit_time = int(res_time.stdout.strip())
             metrics["days_since_last_commit"] = max(0, int((time.time() - commit_time) / 86400))
+
+        if metrics["commit_count"] > 0:
+            res_merges = subprocess.run(
+                ["git", "log", "--oneline", "--merges"],
+                cwd=str(repo_dir),
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=10,
+            )
+            merge_count = 0
+            if res_merges.returncode == 0:
+                merge_count = sum(
+                    1 for line in res_merges.stdout.splitlines() if line.strip()
+                )
+            metrics["merge_to_commit_ratio"] = round(
+                merge_count / metrics["commit_count"],
+                4,
+            )
     except Exception:
         pass
 

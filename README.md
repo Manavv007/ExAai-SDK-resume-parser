@@ -51,9 +51,25 @@ Edit `.env` and set at minimum `GEMINI_API_KEY`, `EXA_API_KEY`, and `API_KEYS`.
 
 ## Run locally
 
-```bash
-uvicorn api.main:app --reload --host 0.0.0.0 --port 8080
+Use the dev script (recommended). It reloads only `agent/` and `api/` (not `tests/`) and
+limits graceful shutdown so reload does not hang while a long `/screen` request is open:
+
+```powershell
+.\scripts\run_dev.ps1
 ```
+
+```bash
+./scripts/run_dev.sh
+```
+
+Manual equivalent:
+
+```bash
+uvicorn api.main:app --reload --reload-dir agent --reload-dir api --timeout-graceful-shutdown 10 --host 0.0.0.0 --port 8080
+```
+
+If reload still appears stuck, press **Ctrl+C** once (or twice to force quit). An in-flight
+screening run can hold the connection until it finishes or the graceful shutdown timeout elapses.
 
 Health check:
 

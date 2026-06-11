@@ -74,6 +74,31 @@ class CrawledSource(BaseModel):
     title: str | None = None
 
 
+class TopFileMatchSignal(StrEnum):
+    POSITIVE = "positive"
+    NEUTRAL = "neutral"
+    NEGATIVE = "negative"
+
+
+class TopFileEvaluation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    repo: str = Field(min_length=1)
+    repo_url: str = Field(min_length=1)
+    path: str = Field(min_length=1)
+    importance_rank: int = Field(ge=1)
+    classification: str | None = None
+    language: str | None = None
+    compaction_tier: str | None = None
+    total_lines: int | None = Field(default=None, ge=0)
+    sent_lines: int | None = Field(default=None, ge=0)
+    content_status: str | None = None
+    jd_criteria: list[str] = Field(default_factory=list)
+    match_signal: TopFileMatchSignal
+    assessment: str = Field(min_length=1, max_length=500)
+    evidence_snippet: str = Field(min_length=1, max_length=200)
+
+
 class LlmCallTraceEntry(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -107,6 +132,39 @@ class ScreeningError(BaseModel):
     source_url: str | None = None
 
 
+class RepoEvaluationScore(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    url: str | None = None
+    repo: str | None = None
+    classification: str | None = None
+    ownership_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    activity_score: int | None = Field(default=None, ge=0, le=100)
+    documentation_score: int | None = Field(default=None, ge=0, le=100)
+    collaborators_score: int | None = Field(default=None, ge=0, le=100)
+    repo_raw_score: int | None = Field(default=None, ge=0, le=100)
+    repo_final_score: int | None = Field(default=None, ge=0, le=100)
+    code_quality_score: int | None = Field(default=None, ge=0, le=100)
+    code_quality_bonus: int | None = Field(default=None, ge=0)
+    is_fork: bool | None = None
+
+
+class EvaluationBreakdown(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    jd_fit_score: int = Field(ge=0, le=100)
+    repo_portfolio_score: int | None = Field(default=None, ge=0, le=100)
+    code_quality_score: int | None = Field(default=None, ge=0, le=100)
+    sandbox_penalty: int = Field(default=0, ge=0, le=100)
+    risk_ceiling: int | None = Field(default=None, ge=0, le=100)
+    ownership_multiplier_avg: float | None = Field(default=None, ge=0.0, le=1.0)
+    composite_score: int = Field(ge=0, le=100)
+    final_score: int | None = Field(default=None, ge=0, le=100)
+    final_score_source: Literal["llm_or_rubric", "evaluation_composite"] | None = None
+    blend_weights: dict[str, float] | None = None
+    repos: list[RepoEvaluationScore | dict[str, Any]] = Field(default_factory=list)
+
+
 class ResumeScreeningResult(BaseModel):
     """Platform output contract."""
 
@@ -125,6 +183,8 @@ class ResumeScreeningResult(BaseModel):
     red_flags: list[RedFlag] = Field(default_factory=list)
     sources_crawled: list[CrawledSource] = Field(default_factory=list)
     temp_sandbox_reports: list[dict[str, Any]] | None = None
+    top_file_evaluation: list[TopFileEvaluation] = Field(default_factory=list)
+    evaluation_breakdown: EvaluationBreakdown | None = None
 
     @field_validator("recommendation_reasoning")
     @classmethod

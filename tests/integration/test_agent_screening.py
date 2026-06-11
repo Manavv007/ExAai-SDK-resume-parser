@@ -88,6 +88,7 @@ async def test_agent_screening_mocked_tool_flow(
     assert result["job_id"] == JOB_ID
     assert mock_fetch.call_count == 1
     assert trusted_url in mock_fetch.call_args[0][0]
+    assert len(result.get("sources_crawled") or []) >= 1
 
 
 @pytest.mark.asyncio

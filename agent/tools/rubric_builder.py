@@ -242,6 +242,8 @@ def requirement_matches_need_rescore(
     rubric: list[dict[str, Any]],
 ) -> bool:
     """True when agent/scorer output is missing most rubric criteria."""
+    from agent.tools.result_sanitizer import _DEFAULT_EVIDENCE, is_placeholder_requirement
+
     if not isinstance(matches, list) or not matches:
         return True
     if _is_placeholder_requirement_match(matches):
@@ -250,6 +252,15 @@ def requirement_matches_need_rescore(
         return False
     if len(matches) < len(rubric):
         return True
+    for index, match in enumerate(matches[: len(rubric)]):
+        if not isinstance(match, dict):
+            return True
+        label = str(match.get("requirement") or "").strip()
+        if is_placeholder_requirement(label):
+            return True
+        evidence = str(match.get("evidence") or "").strip()
+        if not evidence or evidence == _DEFAULT_EVIDENCE:
+            return True
     return False
 
 

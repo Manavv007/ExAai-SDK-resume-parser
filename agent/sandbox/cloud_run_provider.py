@@ -11,6 +11,7 @@ import httpx
 
 from agent.config import Settings, get_settings
 from agent.sandbox.base import SandboxCommand
+from agent.sandbox.focus_transport import file_focus_json_for_cloud_run_job
 from agent.sandbox.models import RepoExecutionReport
 from agent.sandbox.report_store import SandboxReportStore, build_report_uri
 
@@ -40,6 +41,7 @@ class CloudRunSandboxProvider:
         access_token: str | None = None,
     ) -> None:
         settings = settings or get_settings()
+        self._settings = settings
         self.job_ref = job_ref or CloudRunJobRef(
             project_id=settings.gcp_project_id,
             region=settings.gcp_region,
@@ -53,6 +55,7 @@ class CloudRunSandboxProvider:
         self.report_store = SandboxReportStore(
             storage_client=storage_client,
             project_id=self.job_ref.project_id or None,
+            credentials_path=settings.sandbox_google_application_credentials,
         )
         self.access_token = access_token
 
@@ -62,6 +65,7 @@ class CloudRunSandboxProvider:
         repo_url: str,
         repo_name: str,
         commands: list[SandboxCommand],
+        file_focus: dict[str, Any] | None = None,
     ) -> RepoExecutionReport:
         """Execute a Cloud Run Job and return the evaluator report."""
         self._validate_config()
@@ -71,6 +75,7 @@ class CloudRunSandboxProvider:
             repo_name=repo_name,
             report_uri=report_uri,
             commands=commands,
+            file_focus=file_focus,
         )
         await self._wait_for_operation(operation_name)
         return await asyncio.to_thread(self._read_report, report_uri)
@@ -95,6 +100,7 @@ class CloudRunSandboxProvider:
         repo_name: str,
         report_uri: str,
         commands: list[SandboxCommand],
+        file_focus: dict[str, Any] | None = None,
     ) -> str:
         env = [
             {"name": "REPO_URL", "value": repo_url},
@@ -109,6 +115,13 @@ class CloudRunSandboxProvider:
                     "value": json.dumps(
                         [{"step": command.step, "command": command.command} for command in commands]
                     ),
+                }
+            )
+        if file_focus:
+            env.append(
+                {
+                    "name": "FILE_FOCUS_JSON",
+                    "value": file_focus_json_for_cloud_run_job(file_focus),
                 }
             )
 
@@ -174,7 +187,11 @@ class CloudRunSandboxProvider:
                     headers=headers,
                     json_payload=json_payload,
                 )
-        response.raise_for_status()
+        if response.status_code >= 400:
+            detail = response.text.strip()
+            raise RuntimeError(
+                f"Cloud Run API {response.status_code} for {url}: {detail[:2000]}"
+            )
         data = response.json()
         if not isinstance(data, dict):
             raise RuntimeError("Cloud Run API response was not a JSON object")
@@ -200,18 +217,11 @@ class CloudRunSandboxProvider:
             return self.access_token
         return await asyncio.to_thread(self._load_access_token)
 
-    @staticmethod
-    def _load_access_token() -> str:
-        import google.auth
-        from google.auth.transport.requests import Request
+    def _load_access_token(self) -> str:
+        from agent.gcp_credentials import access_token_from_credentials, load_sandbox_gcp_credentials
 
-        credentials, _project = google.auth.default(scopes=[CLOUD_PLATFORM_SCOPE])
-        if not credentials.valid:
-            credentials.refresh(Request())
-        token = credentials.token
-        if not token:
-            raise RuntimeError("Google credentials did not provide an access token")
-        return token
+        credentials = load_sandbox_gcp_credentials(self._settings)
+        return access_token_from_credentials(credentials)
 
     def _read_report(self, report_uri: str) -> RepoExecutionReport:
         return self.report_store.read(report_uri)

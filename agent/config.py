@@ -28,6 +28,8 @@ ScreeningMode = Literal["pipeline", "agent"]
 LlmProvider = Literal["gemini", "openrouter", "groq", "auto"]
 SandboxProvider = Literal["cloud_run", "docker", "e2b", "upstash_box"]
 SandboxNetworkMode = Literal["none", "install_only", "always"]
+SandboxPreRunMode = Literal["auto", "none", "risk_only", "full"]
+ResolvedSandboxPreRunMode = Literal["none", "risk_only", "full"]
 
 
 class Settings(BaseSettings):
@@ -37,6 +39,34 @@ class Settings(BaseSettings):
 
     gemini_api_key: str = ""
     gemini_model_id: str = "gemini-2.0-flash"
+    gemini_use_vertexai: bool = Field(
+        default=False,
+        description=(
+            "Use Vertex AI (Application Default Credentials) instead of AI Studio GEMINI_API_KEY. "
+            "Requires VERTEX_GCP_PROJECT_ID (or GCP_PROJECT_ID) and GCP_REGION; set "
+            "GOOGLE_APPLICATION_CREDENTIALS or run gcloud auth application-default login."
+        ),
+    )
+    vertex_gcp_project_id: str = Field(
+        default="",
+        description=(
+            "GCP project for Vertex AI when GEMINI_USE_VERTEXAI=true. "
+            "Use when LLM runs on a different project than Cloud Run sandbox (GCP_PROJECT_ID)."
+        ),
+    )
+    vertex_google_application_credentials: str = Field(
+        default="",
+        description=(
+            "Service account JSON for Vertex AI. Defaults to GOOGLE_APPLICATION_CREDENTIALS."
+        ),
+    )
+    sandbox_google_application_credentials: str = Field(
+        default="",
+        description=(
+            "Service account JSON for Cloud Run sandbox + GCS reports on GCP_PROJECT_ID. "
+            "Use when Vertex and sandbox use different GCP projects/accounts."
+        ),
+    )
     llm_provider: LlmProvider = Field(
         default="auto",
         description=(
@@ -134,6 +164,45 @@ class Settings(BaseSettings):
             "with status processing and finalize in the background."
         ),
     )
+    sandbox_overlap_enabled: bool = Field(
+        default=False,
+        description=(
+            "When true (and deferred mode is off), run sandbox evaluation in parallel "
+            "with agent/pipeline scoring; await reports at submit/score time."
+        ),
+    )
+    sandbox_llm_scoring_enabled: bool = Field(
+        default=True,
+        description=(
+            "When true, the agent/scorer judges sandbox reports (vulns, secrets, severe issues) "
+            "instead of applying deterministic test/CI penalties after submit."
+        ),
+    )
+    agent_evidence_orchestration_enabled: bool = Field(
+        default=False,
+        description=(
+            "When true with SCREENING_MODE=agent, the agent calls get_github_repo_structures, "
+            "fetch_profiles, and run_sandbox_analysis instead of prep-time sandbox."
+        ),
+    )
+    sandbox_focus_max_files: int = Field(
+        default=12,
+        description="Maximum focused file excerpts returned per sandboxed repository.",
+    )
+    sandbox_top_files_count: int = Field(
+        default=5,
+        description="Number of compacted top files per repo in sandbox top_files payload.",
+    )
+    sandbox_pre_run_mode: SandboxPreRunMode = Field(
+        default="auto",
+        description=(
+            "Prep-time sandbox before the agent when AGENT_EVIDENCE_ORCHESTRATION_ENABLED=true. "
+            "auto: none under agent orchestration, full otherwise; "
+            "none: agent must call run_sandbox_analysis with focus_paths; "
+            "risk_only: vuln/secret pre-pass before agent (no file excerpts); "
+            "full: legacy pre-run with heuristic file sampling."
+        ),
+    )
     sandbox_network_mode: SandboxNetworkMode = Field(
         default="install_only",
         description=(
@@ -191,8 +260,34 @@ class Settings(BaseSettings):
         default=False,
         description="Use Gemini for JD structuring; false = heuristic only (saves 1 API call)",
     )
+    llm_temperature: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=1.0,
+        description="LLM sampling temperature for scoring and structured JSON calls (0 = most stable).",
+    )
+    scoring_score_step: int = Field(
+        default=5,
+        ge=1,
+        le=25,
+        description="Quantize requirement match_score and final overall score to this step (e.g. 5 → 70, 75, 80).",
+    )
+    scoring_rubric_derived: bool = Field(
+        default=True,
+        description=(
+            "When true, overall resume_similarity_score is the weighted rubric mean "
+            "from requirement_matches (ignores LLM overall score inflation)."
+        ),
+    )
 
     infer_profile_urls: bool = False
+    auto_enrich_profiles: bool = Field(
+        default=True,
+        description=(
+            "Pre-fetch resume profile URLs via Exa before agent scoring. "
+            "Populates enriched_contents and sources_crawled even when the agent skips fetch_profiles."
+        ),
+    )
     profile_scoring_mode: str = Field(
         default="strict",
         description="strict: limited profiles omit crawl body; balanced: include with warning",
@@ -218,7 +313,10 @@ class Settings(BaseSettings):
     )
     agent_run_timeout_seconds: int = Field(
         default=120,
-        description="Wall-clock timeout for a single agent screening run",
+        description=(
+            "Wall-clock timeout for a single agent screening run. When agent evidence "
+            "orchestration is enabled, the effective timeout is raised to cover sandbox wait."
+        ),
     )
 
     agent_version: str = "0.1.0"
@@ -228,6 +326,11 @@ class Settings(BaseSettings):
 
     def parsed_api_keys(self) -> set[str]:
         return {k.strip() for k in self.api_keys.split(",") if k.strip()}
+
+
+def resolve_vertex_gcp_project(settings: Settings) -> str:
+    """Vertex AI project (may differ from sandbox Cloud Run project)."""
+    return settings.vertex_gcp_project_id.strip() or settings.gcp_project_id.strip()
 
 
 def get_settings() -> Settings:

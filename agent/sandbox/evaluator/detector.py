@@ -28,6 +28,8 @@ from agent.sandbox.evaluator.tree_sitter_analyzer import analyze_non_python_code
 
 def detect_project(
     repo_dir: Path,
+    *,
+    focus_spec: dict[str, Any] | None = None,
 ) -> tuple[
     list[str],
     dict[str, bool | int | str | list[str]],
@@ -93,7 +95,7 @@ def detect_project(
     has_docker = has_docker_config(repo_dir)
     file_count = sum(1 for path in repo_dir.rglob("*") if path.is_file())
 
-    repo_profile, findings = profile_repository(repo_dir, stack)
+    repo_profile, findings = profile_repository(repo_dir, stack, focus_spec=focus_spec)
     return (
         stack,
         {

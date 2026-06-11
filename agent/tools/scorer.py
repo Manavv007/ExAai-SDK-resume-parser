@@ -20,6 +20,8 @@ from agent.tools.result_sanitizer import (
     coerce_score,
     compact_metadata,
     optional_metadata_int,
+    quantize_score,
+    resolve_overall_score,
     sanitize_red_flags,
     sanitize_requirement_matches,
     sanitize_sources_crawled,
@@ -32,7 +34,11 @@ from agent.tools.rubric_builder import (
     enforce_must_have_score_cap,
     resolve_session_rubric,
 )
+from agent.sandbox_gating import sandbox_llm_scoring_active
+from agent.tools.sandbox_prompt import SANDBOX_LLM_SCORING_RULES, format_sandbox_reports_for_prompt
+from agent.tools.repo_scoring import build_evaluation_breakdown, resolve_score_from_evaluation_breakdown
 from agent.tools.sandbox_scoring import apply_sandbox_score_penalty
+from agent.tools.top_file_evaluation import merge_top_file_evaluation
 from agent.tools.validator import validate_result_detailed
 
 _JSON_BLOCK = re.compile(r"```(?:json)?\s*(\{.*)\s*```", re.DOTALL)
@@ -134,6 +140,7 @@ def _build_scoring_prompt(
     rubric_preamble: str,
     enriched_contents: list[dict[str, Any]],
     github_repo_analyses: dict[str, Any] | None = None,
+    compact_sandbox_prompt: bool = False,
 ) -> str:
     external_blocks = "\n\n".join(
         format_enriched_content_for_scoring(
@@ -164,7 +171,15 @@ def _build_scoring_prompt(
             )
         repos_str = "\n".join(repos_summary)
         sandbox_reports = github_repo_analyses.get("sandbox_reports") or []
-        sandbox_str = json.dumps(sandbox_reports, indent=2)[:4000] if sandbox_reports else "(none)"
+        if sandbox_reports and sandbox_llm_scoring_active():
+            sandbox_str = format_sandbox_reports_for_prompt(
+                sandbox_reports,
+                max_chars=3500 if compact_sandbox_prompt else None,
+            )
+        else:
+            sandbox_str = (
+                json.dumps(sandbox_reports, indent=2)[:4000] if sandbox_reports else "(none)"
+            )
         candidate_tags = github_repo_analyses.get("candidate_tags") or []
         github_metadata = github_repo_analyses.get("github_metadata") or {}
         github_block = (
@@ -182,6 +197,8 @@ def _build_scoring_prompt(
             f"Key Repos:\n{repos_str}\n"
             f"Sandbox Reports (data only):\n{sandbox_str}\n"
         )
+        if sandbox_reports and sandbox_llm_scoring_active():
+            github_block += f"\n{SANDBOX_LLM_SCORING_RULES}\n"
 
     prompt = f"""You are an expert resume screening judge for hiring teams.
 
@@ -190,7 +207,8 @@ def _build_scoring_prompt(
 Return ONLY valid JSON matching the response schema (no markdown).
 Rules:
 - One requirement_matches entry per rubric criterion below (same order).
-- match_score and resume_similarity_score.score must be integers 0-100 (not floats).
+- match_score must be integers 0-100 on a 5-point scale (0, 5, 10, …, 100).
+- resume_similarity_score.score is computed from weighted match_scores; score each criterion carefully.
 - evidence: max 200 characters, plain text, no newlines; never empty.
 - Do not include metadata, application_id, job_id, sources_crawled, or null fields.
 - Do not include source_quote unless you have a short quote.
@@ -225,20 +243,28 @@ def attach_temp_sandbox_reports(
     """Temporarily expose sandbox evaluation payloads on the API response."""
     if not isinstance(github_repo_analyses, dict):
         return result
-    if not github_repo_analyses.get("username"):
-        return result
-    urls = github_repo_analyses.get("selected_sandbox_repo_urls")
+
     reports = github_repo_analyses.get("sandbox_reports")
+    report_list = reports if isinstance(reports, list) else []
+    has_github_context = bool(github_repo_analyses.get("username")) or bool(report_list)
+    if not has_github_context:
+        return result
+
+    existing = result.get("temp_sandbox_reports")
+    urls = github_repo_analyses.get("selected_sandbox_repo_urls")
     if isinstance(urls, list) and urls:
         from agent.tools.github_analyzer import align_sandbox_reports_with_urls
 
-        report_list = reports if isinstance(reports, list) else []
-        result["temp_sandbox_reports"] = align_sandbox_reports_with_urls(
+        attached = align_sandbox_reports_with_urls(
             [str(url) for url in urls if url],
             report_list,
         )
     else:
-        result["temp_sandbox_reports"] = reports if isinstance(reports, list) else []
+        attached = report_list
+
+    if not attached and isinstance(existing, list) and existing:
+        return result
+    result["temp_sandbox_reports"] = attached
     return result
 
 
@@ -268,6 +294,8 @@ def normalize_screening_result(
     identity_red_flags: list[dict[str, str]] | None = None,
     profile_identity_cap_score: bool = False,
     github_repo_analyses: dict[str, Any] | None = None,
+    profile_urls: list[str] | None = None,
+    profile_url_meta: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Map model output onto the platform contract and apply score caps."""
     settings = get_settings()
@@ -277,15 +305,38 @@ def normalize_screening_result(
     if not isinstance(similarity, dict):
         similarity = {}
 
+    score_step = max(1, int(getattr(settings, "scoring_score_step", 5) or 5))
     requirement_matches = sanitize_requirement_matches(
         raw.get("requirement_matches"),
         rubric,
+        score_step=score_step,
     )
 
     derived_score = derive_overall_score_from_matches(requirement_matches, rubric)
-    score = coerce_score(similarity.get("score"))
-    if derived_score > 0:
-        score = max(score, derived_score)
+    llm_score = coerce_score(similarity.get("score"))
+    sandbox_reports = []
+    if isinstance(github_repo_analyses, dict):
+        raw_reports = github_repo_analyses.get("sandbox_reports")
+        if isinstance(raw_reports, list):
+            sandbox_reports = raw_reports
+    score = resolve_overall_score(
+        llm_score=llm_score,
+        derived_score=derived_score,
+        rubric=rubric if isinstance(rubric, list) else list(rubric),
+        requirement_matches=requirement_matches,
+        rubric_derived=bool(getattr(settings, "scoring_rubric_derived", True)),
+        sandbox_llm_scoring=sandbox_llm_scoring_active(),
+        has_sandbox_reports=bool(sandbox_reports),
+    )
+
+    jd_fit_for_breakdown = derived_score if derived_score > 0 else llm_score
+    evaluation_breakdown = build_evaluation_breakdown(
+        requirement_matches=requirement_matches,
+        rubric=rubric if isinstance(rubric, list) else list(rubric),
+        github_repo_analyses=github_repo_analyses,
+        jd_fit_score=jd_fit_for_breakdown if jd_fit_for_breakdown > 0 else None,
+    )
+    score, score_source = resolve_score_from_evaluation_breakdown(score, evaluation_breakdown)
 
     score = enforce_must_have_score_cap(score, requirement_matches, rubric)
     if profile_identity_cap_score:
@@ -295,17 +346,45 @@ def normalize_screening_result(
         else:
             score = capped
 
-    score, sandbox_penalty = apply_sandbox_score_penalty(score, github_repo_analyses)
+    pre_sandbox_score = score
+    sandbox_penalty = 0
+    if score_source == "evaluation_composite" and isinstance(evaluation_breakdown, dict):
+        sandbox_penalty = int(evaluation_breakdown.get("sandbox_penalty") or 0)
+    else:
+        score, sandbox_penalty = apply_sandbox_score_penalty(score, github_repo_analyses)
+    score = quantize_score(score, step=score_step)
+    if sandbox_penalty > 0 and score != pre_sandbox_score and score_source != "evaluation_composite":
+        sandbox_penalty = pre_sandbox_score - score
 
     reasoning = str(similarity.get("reasoning") or "").strip()
     if sandbox_penalty > 0:
+        from agent.tools.sandbox_scoring import compute_sandbox_score_ceiling
+
+        ceiling_note = ""
+        reports = []
+        if isinstance(github_repo_analyses, dict):
+            raw_reports = github_repo_analyses.get("sandbox_reports")
+            if isinstance(raw_reports, list):
+                reports = raw_reports
+        ceiling = compute_sandbox_score_ceiling(reports) if reports else None
+        if ceiling is not None and score <= ceiling:
+            ceiling_note = f" Score capped at {ceiling} for severe aligned-repo risk."
         penalty_note = (
             f" Sandbox repo review reduced the score by {sandbox_penalty} points "
-            "due to engineering-risk signals (secrets, vulnerabilities, or missing tests/CI)."
+            "due to engineering-risk signals (secrets, vulnerabilities, or high-severity findings)."
+            f"{ceiling_note}"
         )
         reasoning = (reasoning + penalty_note).strip()[:500]
     else:
         reasoning = reasoning[:500]
+    if isinstance(evaluation_breakdown, dict) and evaluation_breakdown.get("repos"):
+        metrics_note = (
+            f" Evaluation: JD fit {evaluation_breakdown.get('jd_fit_score')},"
+            f" portfolio {evaluation_breakdown.get('repo_portfolio_score')},"
+            f" code quality {evaluation_breakdown.get('code_quality_score')},"
+            f" composite {evaluation_breakdown.get('composite_score')}."
+        )
+        reasoning = (reasoning + metrics_note).strip()[:500]
     if not reasoning:
         reasoning = "No reasoning provided."
 
@@ -318,6 +397,8 @@ def normalize_screening_result(
     sources = sanitize_sources_crawled(
         raw.get("sources_crawled"),
         enriched_fallback=enriched_contents,
+        profile_urls_fallback=profile_urls,
+        profile_url_meta=profile_url_meta,
     )
 
     meta_in = raw.get("metadata") if isinstance(raw.get("metadata"), dict) else {}
@@ -356,6 +437,14 @@ def normalize_screening_result(
     if isinstance(agent_submit_fallback, bool):
         metadata["agent_submit_fallback"] = agent_submit_fallback
 
+    heuristic_fallback = meta_in.get("sandbox_heuristic_fallback")
+    if isinstance(heuristic_fallback, bool):
+        metadata["sandbox_heuristic_fallback"] = heuristic_fallback
+    elif isinstance(github_repo_analyses, dict) and github_repo_analyses.get(
+        "sandbox_heuristic_fallback"
+    ):
+        metadata["sandbox_heuristic_fallback"] = True
+
     metadata = compact_metadata(metadata)
 
     result = {
@@ -378,6 +467,17 @@ def normalize_screening_result(
     }
 
     attach_temp_sandbox_reports(result, github_repo_analyses)
+    if isinstance(evaluation_breakdown, dict):
+        breakdown_out = dict(evaluation_breakdown)
+        breakdown_out["final_score_source"] = score_source
+        breakdown_out["final_score"] = result["resume_similarity_score"]["score"]
+        result["evaluation_breakdown"] = breakdown_out
+    top_file_evaluation = merge_top_file_evaluation(
+        raw.get("top_file_evaluation"),
+        github_repo_analyses,
+    )
+    if top_file_evaluation:
+        result["top_file_evaluation"] = top_file_evaluation
 
     if result["resume_screening_status"] not in ("completed", "failed"):
         result["resume_screening_status"] = "completed"
@@ -436,7 +536,10 @@ def score_screening(
     identity_red_flags: list[dict[str, str]] | None = None,
     profile_identity_cap_score: bool = False,
     github_repo_analyses: dict[str, Any] | None = None,
+    profile_urls: list[str] | None = None,
+    profile_url_meta: list[dict[str, Any]] | None = None,
     max_llm_attempts: int | None = None,
+    compact_sandbox_prompt: bool = False,
 ) -> dict[str, Any]:
     """
     Run Gemini judge and return normalized resume-screening-result-v1 dict.
@@ -461,6 +564,7 @@ def score_screening(
         rubric_preamble=preamble,
         enriched_contents=enriched,
         github_repo_analyses=github_repo_analyses,
+        compact_sandbox_prompt=compact_sandbox_prompt,
     )
 
     last_error = "unknown"
@@ -480,6 +584,8 @@ def score_screening(
                 identity_red_flags=identity_red_flags,
                 profile_identity_cap_score=profile_identity_cap_score,
                 github_repo_analyses=github_repo_analyses,
+                profile_urls=profile_urls,
+                profile_url_meta=profile_url_meta,
             )
             outcome = validate_result_detailed(normalized)
             if outcome.ok:
@@ -514,6 +620,7 @@ def score_screening_from_state(
     state: dict[str, Any],
     *,
     max_llm_attempts: int | None = None,
+    compact_sandbox_prompt: bool = False,
 ) -> dict[str, Any]:
     """Score using ADK/prep session state keys."""
     rubric = resolve_session_rubric(state)
@@ -531,5 +638,8 @@ def score_screening_from_state(
         identity_red_flags=state.get("identity_red_flags") or [],
         profile_identity_cap_score=bool(state.get("profile_identity_cap_score")),
         github_repo_analyses=state.get("github_repo_analyses"),
+        profile_urls=list(state.get("profile_urls") or []),
+        profile_url_meta=list(state.get("profile_url_meta") or []),
         max_llm_attempts=max_llm_attempts,
+        compact_sandbox_prompt=compact_sandbox_prompt,
     )

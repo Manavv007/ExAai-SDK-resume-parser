@@ -2,8 +2,10 @@
 
 from agent.security.profile_identity import (
     ProfileTrust,
+    _is_personal_identity_profile_url,
     _slug_matches_identity,
     assess_profile_links,
+    build_identity_red_flags,
     extract_identity_bundle,
     should_cap_score_for_identity,
 )
@@ -66,6 +68,50 @@ def test_someone_elses_github_untrusted() -> None:
     gh = [a for a in assessments if "torvalds" in a.url][0]
     assert gh.trust == ProfileTrust.SCORING_UNTRUSTED
     assert should_cap_score_for_identity(assessments)
+
+
+def test_github_repo_url_is_not_personal_identity_profile() -> None:
+    assert _is_personal_identity_profile_url("https://github.com/Manavv007") is True
+    assert (
+        _is_personal_identity_profile_url(
+            "https://github.com/Manavv007/S.A.R.A.L.-Scheme-Access-Retrieval-Analysis-Layer-"
+        )
+        is False
+    )
+
+
+def test_linkedin_plus_github_repos_no_identity_mismatch_flag() -> None:
+    """Project repo URLs must not conflict with a lone LinkedIn profile."""
+    resume = """
+    Manav Bhavsar
+    LinkedIn: https://linkedin.com/in/manavbhavsar0908
+    Project: https://github.com/Manavv007/S.A.R.A.L.-Scheme-Access-Retrieval-Analysis-Layer-
+    """
+    links = extract_links(resume, max_urls=10)
+    assessments = assess_profile_links(resume, links)
+    li = [a for a in assessments if "/in/manavbhavsar0908" in a.url][0]
+    assert li.trust != ProfileTrust.SCORING_UNTRUSTED
+    flags = build_identity_red_flags(assessments)
+    assert not any(f["flag"] == "profile_identity_mismatch" for f in flags)
+
+
+def test_github_profile_and_linkedin_plausible_without_presidio_name(monkeypatch) -> None:
+    def _no_person(_text: str) -> list[str]:
+        return []
+
+    monkeypatch.setattr(
+        "agent.security.profile_identity._name_tokens_from_resume",
+        _no_person,
+    )
+    resume = """
+    manav@gmail.com
+    GitHub: https://github.com/Manavv007
+    LinkedIn: https://linkedin.com/in/manavbhavsar0908
+    """
+    links = extract_links(resume, max_urls=10)
+    assessments = assess_profile_links(resume, links)
+    assert all(a.trust != ProfileTrust.SCORING_UNTRUSTED for a in assessments)
+    assert should_cap_score_for_identity(assessments) is False
 
 
 def test_conflicting_explicit_profiles_untrusted() -> None:

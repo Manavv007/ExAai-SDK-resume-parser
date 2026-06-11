@@ -279,7 +279,9 @@ def parse_jd_structured(jd_text: str, *, use_llm: bool | None = None) -> JdStruc
     """
     if use_llm is None:
         settings = get_settings()
-        use_llm = settings.jd_parse_use_llm and bool(settings.gemini_api_key.strip())
+        from agent.llm_client import gemini_configured
+
+        use_llm = settings.jd_parse_use_llm and gemini_configured(settings)
 
     if use_llm:
         try:
@@ -344,11 +346,12 @@ def parse_resume_structured(text: str) -> ResumeStructured:
 
 
 def _parse_jd_with_gemini(jd_text: str) -> JdStructured:
-    from google import genai
     from google.genai import types
 
+    from agent.llm_client import create_genai_client
+
     settings = get_settings()
-    client = genai.Client(api_key=settings.gemini_api_key)
+    client = create_genai_client(settings)
 
     prompt = f"""Extract job description structure from the text below.
 Return JSON only with keys:

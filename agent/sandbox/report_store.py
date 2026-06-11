@@ -50,6 +50,7 @@ class SandboxReportStore:
 
     storage_client: Any | None = None
     project_id: str | None = None
+    credentials_path: str = ""
 
     def write(self, report: RepoExecutionReport, destination: str) -> None:
         payload = json.dumps(report.model_dump(mode="json"), indent=2)
@@ -87,4 +88,14 @@ class SandboxReportStore:
             from google.cloud import storage
         except ImportError as exc:  # pragma: no cover - dependency is declared for runtime
             raise RuntimeError("google-cloud-storage is required for gs:// report storage") from exc
-        return storage.Client(project=self.project_id)
+        from agent.config import get_settings
+        from agent.gcp_credentials import load_sandbox_gcp_credentials
+
+        settings = get_settings()
+        if self.credentials_path.strip():
+            from agent.gcp_credentials import load_gcp_credentials
+
+            credentials = load_gcp_credentials(settings_path=self.credentials_path)
+        else:
+            credentials = load_sandbox_gcp_credentials(settings)
+        return storage.Client(project=self.project_id, credentials=credentials)

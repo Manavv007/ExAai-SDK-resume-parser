@@ -36,13 +36,56 @@ def coerce_score(value: Any, *, default: int = 0) -> int:
     return default
 
 
+def quantize_score(score: int, *, step: int = 5) -> int:
+    """Snap a 0-100 score to the nearest step (e.g. step=5 → 70, 75, 80)."""
+    if step <= 1:
+        return max(0, min(100, score))
+    quantized = int(round(score / step) * step)
+    return max(0, min(100, quantized))
+
+
+def _matches_cover_rubric(
+    requirement_matches: list[dict[str, Any]],
+    rubric: list[Any],
+) -> bool:
+    """True when every rubric row has a real LLM match (not a padded placeholder)."""
+    if not rubric or len(requirement_matches) < len(rubric):
+        return False
+    for match in requirement_matches[: len(rubric)]:
+        if str(match.get("evidence") or "").strip() == _DEFAULT_EVIDENCE:
+            return False
+    return True
+
+
+def resolve_overall_score(
+    *,
+    llm_score: int,
+    derived_score: int,
+    rubric: list[Any],
+    requirement_matches: list[dict[str, Any]],
+    rubric_derived: bool,
+    sandbox_llm_scoring: bool = False,
+    has_sandbox_reports: bool = False,
+) -> int:
+    """Pick the overall score from LLM output vs weighted rubric mean."""
+    if sandbox_llm_scoring and has_sandbox_reports and llm_score > 0:
+        return llm_score
+
+    has_full_rubric = _matches_cover_rubric(requirement_matches, rubric)
+    if rubric_derived and has_full_rubric and derived_score > 0:
+        return derived_score
+    if derived_score > 0:
+        return max(llm_score, derived_score)
+    return llm_score
+
+
 def _rubric_item_name(item: Any) -> str:
     if isinstance(item, dict):
         return str(item.get("criterion") or item.get("requirement") or "").strip()
     return str(getattr(item, "criterion", None) or getattr(item, "requirement", None) or "").strip()
 
 
-def _is_placeholder_requirement(text: str) -> bool:
+def is_placeholder_requirement(text: str) -> bool:
     cleaned = text.strip().lower()
     return not cleaned or cleaned in _PLACEHOLDER_REQUIREMENTS
 
@@ -54,13 +97,13 @@ def _resolve_requirement_label(
     index: int,
 ) -> str:
     """Map agent output to the rubric criterion text (fixes literal 'requirement' placeholders)."""
-    from_model = str(item.get("requirement") or item.get("criterion") or "").strip()
     rubric_name = _rubric_item_name(rubric[index]) if index < len(rubric) else ""
-    if rubric_name and _is_placeholder_requirement(from_model):
+    if rubric_name:
         return rubric_name
-    if from_model:
+    from_model = str(item.get("requirement") or item.get("criterion") or "").strip()
+    if from_model and not is_placeholder_requirement(from_model):
         return from_model
-    return rubric_name or "requirement"
+    return "requirement"
 
 
 def _rubric_item_type(item: Any) -> str:
@@ -76,6 +119,8 @@ def _rubric_item_type(item: Any) -> str:
 def sanitize_requirement_matches(
     raw: Any,
     rubric: list[Any],
+    *,
+    score_step: int = 1,
 ) -> list[dict[str, Any]]:
     """Normalize requirement_matches; align length to rubric when possible."""
     items = raw if isinstance(raw, list) else []
@@ -96,10 +141,11 @@ def sanitize_requirement_matches(
         if not evidence:
             evidence = _DEFAULT_EVIDENCE
 
+        raw_match_score = coerce_score(item.get("match_score"))
         entry: dict[str, Any] = {
             "requirement": requirement or "requirement",
             "requirement_type": req_type,
-            "match_score": coerce_score(item.get("match_score")),
+            "match_score": quantize_score(raw_match_score, step=score_step),
             "evidence": evidence,
         }
         source_quote = item.get("source_quote")
@@ -157,10 +203,27 @@ def _normalize_url(url: str) -> str:
     return cleaned
 
 
+def _title_from_profile_meta(
+    url: str,
+    profile_url_meta: list[dict[str, Any]] | None,
+) -> str | None:
+    for item in profile_url_meta or []:
+        if not isinstance(item, dict):
+            continue
+        if _normalize_url(str(item.get("url") or "")) != url:
+            continue
+        platform = item.get("platform")
+        if isinstance(platform, str) and platform.strip():
+            return platform.strip()[:200]
+    return None
+
+
 def sanitize_sources_crawled(
     raw: Any,
     *,
     enriched_fallback: list[dict[str, Any]],
+    profile_urls_fallback: list[str] | None = None,
+    profile_url_meta: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     items = raw if isinstance(raw, list) else []
     sanitized: list[dict[str, Any]] = []
@@ -190,18 +253,31 @@ def sanitize_sources_crawled(
         if not url or url in seen:
             continue
         seen.add(url)
-        sanitized.append(
-            {
-                "url": url,
-                "relevance": "high" if item.get("ok", True) else "low",
-                **(
-                    {"title": str(item["domain_category"]).strip()[:200]}
-                    if isinstance(item.get("domain_category"), str)
-                    and str(item.get("domain_category")).strip()
-                    else {}
-                ),
-            }
-        )
+        if item.get("skipped_fetch"):
+            relevance = "low"
+        elif item.get("ok", True):
+            relevance = "high"
+        else:
+            relevance = "low"
+        entry: dict[str, Any] = {"url": url, "relevance": relevance}
+        title = item.get("domain_category")
+        if isinstance(title, str) and title.strip():
+            entry["title"] = title.strip()[:200]
+        sanitized.append(entry)
+
+    if sanitized:
+        return sanitized
+
+    for raw_url in profile_urls_fallback or []:
+        url = _normalize_url(str(raw_url or ""))
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        entry = {"url": url, "relevance": "medium"}
+        title = _title_from_profile_meta(url, profile_url_meta)
+        if title:
+            entry["title"] = title
+        sanitized.append(entry)
     return sanitized
 
 

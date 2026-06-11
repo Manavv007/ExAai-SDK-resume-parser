@@ -212,11 +212,30 @@ def align_sandbox_reports_with_urls(
     """Ensure one report per selected URL, preserving resume order."""
     by_url: dict[str, dict[str, Any]] = {}
     for report in reports:
-        if isinstance(report, dict):
-            url = str(report.get("url") or "").strip()
-            if url:
-                by_url[url] = report
-    return [by_url[url] for url in urls if url in by_url]
+        if not isinstance(report, dict):
+            continue
+        raw_url = str(report.get("url") or "").strip()
+        if not raw_url:
+            continue
+        canonical = normalize_github_repo_url(raw_url) or raw_url.rstrip("/").removesuffix(".git")
+        by_url[canonical] = report
+        by_url[raw_url] = report
+
+    aligned: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for raw in urls:
+        url = str(raw or "").strip()
+        if not url:
+            continue
+        canonical = normalize_github_repo_url(url) or url.rstrip("/").removesuffix(".git")
+        report = by_url.get(canonical) or by_url.get(url)
+        if report is not None and canonical not in seen:
+            aligned.append(report)
+            seen.add(canonical)
+
+    if aligned:
+        return aligned
+    return [report for report in reports if isinstance(report, dict)]
 
 
 async def _resolve_resume_repos_for_analysis(
@@ -306,6 +325,7 @@ async def _evaluate_sandbox_repos(
     repo_urls: list[str],
     settings: Any,
     *,
+    file_focus_by_url: dict[str, dict[str, Any]] | None = None,
     _retry_pass: int = 0,
 ) -> list[dict[str, Any]]:
     """Evaluate selected repositories in parallel through the configured sandbox provider."""
@@ -328,6 +348,8 @@ async def _evaluate_sandbox_repos(
             for url in repo_urls
         ]
 
+    focus_map = file_focus_by_url if isinstance(file_focus_by_url, dict) else {}
+
     async def evaluate(url: str) -> dict[str, Any]:
         repo_name = _repo_name_from_url(url)
         try:
@@ -335,6 +357,7 @@ async def _evaluate_sandbox_repos(
                 repo_url=url,
                 repo_name=repo_name,
                 commands=[],
+                file_focus=focus_map.get(url),
             )
             return report.compact()
         except Exception as exc:
@@ -398,6 +421,7 @@ async def _evaluate_sandbox_repos(
         retry_reports = await _evaluate_sandbox_repos(
             timed_out_urls,
             settings,
+            file_focus_by_url=focus_map,
             _retry_pass=_retry_pass + 1,
         )
         for url, report in zip(timed_out_urls, retry_reports):
@@ -922,11 +946,12 @@ async def _generate_coding_style_summary(
         else:
             import time
 
-            from google import genai
             from google.genai import types
             from google.genai.errors import APIError, ServerError
 
-            client = genai.Client(api_key=settings.gemini_api_key)
+            from agent.llm_client import create_genai_client
+
+            client = create_genai_client(settings)
             max_retries = 3
             delay = 1.5
             response = None

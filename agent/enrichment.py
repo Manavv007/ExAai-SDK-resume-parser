@@ -141,6 +141,28 @@ def _stub_untrusted_profile_entry(url: str) -> dict[str, Any]:
     }
 
 
+def _failed_fetch_entry(
+    url: str,
+    *,
+    trust_by_url: dict[str, str],
+    error: str,
+    message: str = "",
+) -> dict[str, Any]:
+    """Record a crawl attempt that did not return usable content."""
+    allow = check_allowlist(url)
+    entry: dict[str, Any] = {
+        "url": url,
+        "content": "",
+        "domain_category": allow.domain_category if allow.allowed else "unknown",
+        "profile_trust": trust_by_url.get(url, ProfileTrust.SCORING_LIMITED.value),
+        "ok": False,
+        "fetch_error": error,
+    }
+    if message:
+        entry["fetch_message"] = message
+    return entry
+
+
 def fetch_profile_url(state: dict[str, Any], url: str) -> dict[str, Any]:
     """
     Fetch one profile URL into ``state['enriched_contents']``.
@@ -331,6 +353,12 @@ def _build_batch_results(
                     "url": url,
                     "error": "exa_fetch_failed",
                     "message": "Empty response from Exa.",
+                    "entry": _failed_fetch_entry(
+                        url,
+                        trust_by_url=trust_by_url,
+                        error="exa_fetch_failed",
+                        message="Empty response from Exa.",
+                    ),
                 }
             )
             continue
@@ -389,11 +417,12 @@ async def fetch_profile_urls_batch_async(
 
     results = _build_batch_results(eligible, url_to_raw, trust_by_url, settings)
 
-    # Merge successful entries into state
+    # Merge successful and failed crawl attempts into state for sources_crawled.
     enriched: list[dict[str, Any]] = list(state.get("enriched_contents") or [])
     for item in results:
-        if item.get("ok") and "entry" in item:
-            enriched.append(item["entry"])
+        entry = item.get("entry")
+        if isinstance(entry, dict):
+            enriched.append(entry)
     state["enriched_contents"] = enriched
 
     fetched = sum(1 for item in results if item.get("ok"))
@@ -457,8 +486,9 @@ async def enrich_profile_urls_async(state: dict[str, Any]) -> list[dict[str, Any
     batch_results = _build_batch_results(to_fetch, url_to_raw, trust_by_url, settings)
 
     for item in batch_results:
-        if item.get("ok") and "entry" in item:
-            enriched.append(item["entry"])
+        entry = item.get("entry")
+        if isinstance(entry, dict):
+            enriched.append(entry)
     state["enriched_contents"] = enriched
     results.extend({k: v for k, v in item.items() if k != "entry"} for item in batch_results)
     return results

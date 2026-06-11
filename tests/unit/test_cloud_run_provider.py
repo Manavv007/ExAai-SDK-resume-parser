@@ -13,9 +13,10 @@ from agent.sandbox.cloud_run_provider import CloudRunJobRef, CloudRunSandboxProv
 
 
 class FakeResponse:
-    def __init__(self, data: dict[str, Any], status_code: int = 200) -> None:
+    def __init__(self, data: dict[str, Any], status_code: int = 200, text: str = "") -> None:
         self.data = data
         self.status_code = status_code
+        self.text = text or json.dumps(data)
 
     def json(self) -> dict[str, Any]:
         return self.data
@@ -171,6 +172,57 @@ async def test_cloud_run_provider_raises_on_operation_error() -> None:
             repo_name="owner/project",
             commands=[],
         )
+
+
+@pytest.mark.asyncio
+async def test_cloud_run_provider_compacts_large_file_focus() -> None:
+    huge_paths = [f"src/file_{index}.py" for index in range(1500)]
+    file_focus = {
+        "repo_role": "aligned",
+        "focus_paths": [{"path": "app/main.py", "source": "agent", "max_lines": 120}],
+        "file_paths": huge_paths,
+        "top_files_count": 5,
+    }
+    http_client = FakeHttpClient(
+        [
+            FakeResponse({"name": "projects/project-1/locations/asia-south1/operations/op-2"}),
+            FakeResponse({"done": True}),
+        ]
+    )
+    report_payload = {
+        "repo": "DevKansara97/chaos-repo",
+        "url": "https://github.com/DevKansara97/chaos-repo",
+        "provider": "cloud_run",
+        "clone_ok": True,
+        "repo_profile": {"top_files": [{"path": "app/main.py"}]},
+        "commands": [],
+        "quality_signals": {},
+        "risk_flags": [],
+        "summary": "ok",
+        "timed_out": False,
+    }
+    provider = CloudRunSandboxProvider(
+        settings=_settings(),
+        http_client=http_client,
+        storage_client=FakeStorageClient(json.dumps(report_payload)),
+        access_token="token-1",
+    )
+
+    report = await provider.evaluate_repo(
+        repo_url="https://github.com/DevKansara97/chaos-repo",
+        repo_name="DevKansara97/chaos-repo",
+        commands=[],
+        file_focus=file_focus,
+    )
+
+    assert report.clone_ok is True
+    env = {
+        item["name"]: item["value"]
+        for item in http_client.posts[0]["json"]["overrides"]["containerOverrides"][0]["env"]
+    }
+    focus = json.loads(env["FILE_FOCUS_JSON"])
+    assert "file_paths" not in focus
+    assert len(env["FILE_FOCUS_JSON"].encode("utf-8")) < 8000
 
 
 def test_cloud_run_provider_validates_required_config() -> None:

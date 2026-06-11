@@ -14,6 +14,74 @@ from agent.sandbox.evaluator.report_writer import _parse_gcs_uri, write_report
 from agent.sandbox.models import CommandResult, RepoExecutionReport
 
 
+def test_build_findings_omits_clean_scans_and_orthogonal_test_warn() -> None:
+    from agent.sandbox.evaluator.repo_profiler import _build_findings
+
+    findings = _build_findings(
+        has_tests=False,
+        has_ci=False,
+        has_docs=False,
+        has_docker=False,
+        has_dockerfile=False,
+        has_docker_compose=False,
+        framework_markers=[],
+        dependency_health={"dependency_count": 0, "pinned_versions": False},
+        architecture={"layers": []},
+        security_profile={
+            "secret_pattern_hits": 0,
+            "has_env_file": False,
+        },
+        documentation_profile={"has_setup_instructions": False},
+        scc_data=None,
+        pip_audit_data={"dependencies": []},
+        npm_audit_data={"metadata": {"vulnerabilities": {}}},
+        trivy_data={"Results": []},
+        semgrep_data={"results": []},
+        checkov_data={"summary": {"failed": 0}},
+        hadolint_data=[],
+        interrogate_data=None,
+        repo_role="orthogonal",
+    )
+
+    titles = " ".join(item["title"].lower() for item in findings)
+    assert "semgrep" not in titles
+    assert "checkov" not in titles
+    assert "trivy" not in titles
+    assert "test suite" not in titles
+
+
+def test_build_findings_warns_missing_tests_for_aligned_repo() -> None:
+    from agent.sandbox.evaluator.repo_profiler import _build_findings
+
+    findings = _build_findings(
+        has_tests=False,
+        has_ci=False,
+        has_docs=False,
+        has_docker=False,
+        has_dockerfile=False,
+        has_docker_compose=False,
+        framework_markers=[],
+        dependency_health={"dependency_count": 0, "pinned_versions": False},
+        architecture={"layers": []},
+        security_profile={
+            "secret_pattern_hits": 0,
+            "has_env_file": False,
+        },
+        documentation_profile={"has_setup_instructions": False},
+        scc_data=None,
+        pip_audit_data=None,
+        npm_audit_data=None,
+        trivy_data=None,
+        semgrep_data=None,
+        checkov_data=None,
+        hadolint_data=None,
+        interrogate_data=None,
+        repo_role="aligned",
+    )
+
+    assert any("test suite" in item["title"].lower() for item in findings)
+
+
 def test_detect_project_and_command_plan_for_python(tmp_path: Path) -> None:
     (tmp_path / "pyproject.toml").write_text("[project]\nname='demo'\n", encoding="utf-8")
     (tmp_path / "requirements.txt").write_text(

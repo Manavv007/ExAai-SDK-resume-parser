@@ -52,6 +52,8 @@ def process_screening_submission(
             identity_red_flags=list(merged_state.get("identity_red_flags") or []),
             profile_identity_cap_score=bool(merged_state.get("profile_identity_cap_score")),
             github_repo_analyses=merged_state.get("github_repo_analyses"),
+            profile_urls=list(merged_state.get("profile_urls") or []),
+            profile_url_meta=list(merged_state.get("profile_url_meta") or []),
         )
     except (ValueError, TypeError) as exc:
         return {"ok": False, "errors": [str(exc)]}

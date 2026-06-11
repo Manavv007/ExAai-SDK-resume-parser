@@ -15,6 +15,8 @@ def test_sync_gemini_env_from_dotenv(
 ) -> None:
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_USE_VERTEXAI", raising=False)
+    monkeypatch.delenv("GOOGLE_GENAI_USE_VERTEXAI", raising=False)
     env_file = tmp_path / ".env"
     env_file.write_text("GEMINI_API_KEY=from-dotenv-key\n", encoding="utf-8")
     monkeypatch.chdir(tmp_path)
@@ -32,6 +34,8 @@ def test_dotenv_clears_stale_google_api_key(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
 ) -> None:
+    monkeypatch.delenv("GEMINI_USE_VERTEXAI", raising=False)
+    monkeypatch.delenv("GOOGLE_GENAI_USE_VERTEXAI", raising=False)
     env_file = tmp_path / ".env"
     env_file.write_text("GEMINI_API_KEY=from-dotenv-key\n", encoding="utf-8")
     monkeypatch.chdir(tmp_path)
@@ -49,6 +53,8 @@ def test_dotenv_overrides_stale_shell_gemini_key(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
 ) -> None:
+    monkeypatch.delenv("GEMINI_USE_VERTEXAI", raising=False)
+    monkeypatch.delenv("GOOGLE_GENAI_USE_VERTEXAI", raising=False)
     env_file = tmp_path / ".env"
     env_file.write_text("GEMINI_API_KEY=from-dotenv-key\n", encoding="utf-8")
     monkeypatch.chdir(tmp_path)

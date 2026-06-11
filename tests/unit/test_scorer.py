@@ -176,6 +176,74 @@ def test_attach_temp_sandbox_reports_noop_without_github_username() -> None:
     assert "temp_sandbox_reports" not in result
 
 
+def test_attach_temp_sandbox_reports_without_username_when_reports_present() -> None:
+    sandbox_reports = [
+        {
+            "repo": "owner/repo",
+            "url": "https://github.com/owner/repo",
+            "clone_ok": True,
+            "repo_profile": {"git_profile": {"commit_count": 5}},
+        }
+    ]
+    result = {"resume_screening_status": "completed"}
+    attach_temp_sandbox_reports(result, {"sandbox_reports": sandbox_reports})
+    assert result["temp_sandbox_reports"] == sandbox_reports
+
+
+def test_attach_temp_sandbox_reports_preserves_existing_when_realign_empty() -> None:
+    existing = [{"repo": "owner/repo", "url": "https://github.com/owner/repo", "clone_ok": True}]
+    result = {"resume_screening_status": "completed", "temp_sandbox_reports": existing}
+    attach_temp_sandbox_reports(
+        result,
+        {
+            "username": "owner",
+            "selected_sandbox_repo_urls": ["https://github.com/other/missing"],
+            "sandbox_reports": [],
+        },
+    )
+    assert result["temp_sandbox_reports"] == existing
+
+
+def test_normalize_ignores_inflated_llm_overall_score() -> None:
+    """Overall score must follow rubric match_scores, not a higher LLM headline score."""
+    rubric = [
+        {"criterion": "Python", "weight": "must_have", "requirement_type": "technical_skill"},
+        {"criterion": "FastAPI", "weight": "nice_to_have", "requirement_type": "technical_skill"},
+    ]
+    raw = {
+        "resume_similarity_score": {"score": 85, "reasoning": "Excellent fit."},
+        "requirement_matches": [
+            {
+                "requirement": "Python",
+                "requirement_type": "technical_skill",
+                "match_score": 72,
+                "evidence": "Resume lists Python.",
+            },
+            {
+                "requirement": "FastAPI",
+                "requirement_type": "technical_skill",
+                "match_score": 68,
+                "evidence": "Some FastAPI exposure.",
+            },
+        ],
+        "recommendation": "advance",
+        "recommendation_reasoning": "Good match.",
+        "red_flags": [],
+    }
+
+    normalized = normalize_screening_result(
+        raw,
+        application_id="11111111-1111-4111-8111-111111111111",
+        job_id="22222222-2222-4222-8222-222222222222",
+        resume_text="resume",
+        rubric=rubric,
+        enriched_contents=[],
+    )
+
+    # (70*2 + 70*1) / 3 = 70 after 5-point quantization of 72 and 68
+    assert normalized["resume_similarity_score"]["score"] == 70
+
+
 def test_normalize_aligns_overall_score_with_high_rubric_matches() -> None:
     """Regression: identity cap must not floor overall score when resume rubric is strong."""
     rubric = [

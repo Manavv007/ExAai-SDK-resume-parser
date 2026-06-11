@@ -5,7 +5,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from agent.tools.result_sanitizer import compact_metadata, sanitize_requirement_matches
+from agent.tools.result_sanitizer import (
+    compact_metadata,
+    quantize_score,
+    resolve_overall_score,
+    sanitize_requirement_matches,
+)
 from agent.tools.scorer import normalize_screening_result
 from agent.tools.validator import validate_result
 
@@ -64,8 +69,8 @@ def test_normalize_messy_llm_payload_passes_validation(test_settings) -> None:
     )
 
     assert validate_result(normalized) is True
-    assert normalized["resume_similarity_score"]["score"] == 82
-    assert normalized["requirement_matches"][0]["match_score"] == 82
+    assert normalized["resume_similarity_score"]["score"] == 80
+    assert normalized["requirement_matches"][0]["match_score"] == 80
     assert normalized["requirement_matches"][0]["evidence"]
     assert normalized["recommendation"] == "advance"
     assert normalized["recommendation_reasoning"]
@@ -109,6 +114,81 @@ def test_sanitize_replaces_placeholder_requirement_with_rubric_criterion() -> No
 
     assert sanitized[0]["requirement"] == "Python programming"
     assert sanitized[1]["requirement"] == "Git experience"
+
+
+def test_quantize_score_snaps_to_step() -> None:
+    assert quantize_score(72, step=5) == 70
+    assert quantize_score(73, step=5) == 75
+    assert quantize_score(82, step=5) == 80
+
+
+def test_resolve_overall_score_prefers_rubric_when_complete() -> None:
+    rubric = [{"criterion": "Python", "weight": "must_have"}]
+    matches = [{"requirement": "Python", "match_score": 70, "evidence": "x"}]
+    assert (
+        resolve_overall_score(
+            llm_score=85,
+            derived_score=70,
+            rubric=rubric,
+            requirement_matches=matches,
+            rubric_derived=True,
+        )
+        == 70
+    )
+    assert (
+        resolve_overall_score(
+            llm_score=85,
+            derived_score=70,
+            rubric=rubric,
+            requirement_matches=matches,
+            rubric_derived=False,
+        )
+        == 85
+    )
+
+
+def test_sanitize_sources_crawled_falls_back_to_enriched_contents() -> None:
+    from agent.tools.result_sanitizer import sanitize_sources_crawled
+
+    sources = sanitize_sources_crawled(
+        [],
+        enriched_fallback=[
+            {
+                "url": "https://github.com/candidate",
+                "domain_category": "code",
+                "ok": True,
+            },
+            {
+                "url": "https://linkedin.com/in/candidate",
+                "domain_category": "professional",
+                "ok": False,
+                "fetch_error": "exa_fetch_failed",
+            },
+        ],
+    )
+
+    assert len(sources) == 2
+    assert sources[0]["url"] == "https://github.com/candidate"
+    assert sources[0]["relevance"] == "high"
+    assert sources[0]["title"] == "code"
+    assert sources[1]["relevance"] == "low"
+
+
+def test_sanitize_sources_crawled_falls_back_to_profile_urls() -> None:
+    from agent.tools.result_sanitizer import sanitize_sources_crawled
+
+    sources = sanitize_sources_crawled(
+        [],
+        enriched_fallback=[],
+        profile_urls_fallback=["https://github.com/candidate"],
+        profile_url_meta=[
+            {"url": "https://github.com/candidate", "platform": "github"},
+        ],
+    )
+
+    assert len(sources) == 1
+    assert sources[0]["url"] == "https://github.com/candidate"
+    assert sources[0]["title"] == "github"
 
 
 def test_compact_metadata_strips_null_optional_fields() -> None:

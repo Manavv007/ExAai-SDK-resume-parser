@@ -3,11 +3,13 @@
 from fastapi import FastAPI
 
 from agent.config import get_settings
+from agent.logging_config import configure_logging
 from api.health import router as health_router
 from api.middleware import ApiKeyMiddleware, RequestIdMiddleware, TimingMiddleware
 from api.routes import router as screening_router
 
 settings = get_settings()
+configure_logging(settings.log_level)
 
 app = FastAPI(
     title="EXAai-ADK",

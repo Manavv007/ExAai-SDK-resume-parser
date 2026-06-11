@@ -46,10 +46,39 @@ def _is_missing(value: Any) -> bool:
     return False
 
 
-def register_prep_state(state: dict[str, Any]) -> None:
-    application_id = str(state.get("application_id") or "").strip()
+def merge_github_repo_analyses(
+    prep_github: dict[str, Any] | None,
+    session_github: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Merge GitHub analysis blobs, preferring the richer sandbox_reports list."""
+    if not isinstance(prep_github, dict) and not isinstance(session_github, dict):
+        return None
+    merged: dict[str, Any] = dict(prep_github or {})
+    if isinstance(session_github, dict):
+        merged.update(session_github)
+
+    prep_reports = (
+        prep_github.get("sandbox_reports")
+        if isinstance(prep_github, dict) and isinstance(prep_github.get("sandbox_reports"), list)
+        else []
+    )
+    session_reports = (
+        session_github.get("sandbox_reports")
+        if isinstance(session_github, dict) and isinstance(session_github.get("sandbox_reports"), list)
+        else []
+    )
+    if len(session_reports) >= len(prep_reports) and session_reports:
+        merged["sandbox_reports"] = session_reports
+    elif prep_reports:
+        merged["sandbox_reports"] = prep_reports
+    return merged
+
+
+def register_prep_state(state: Any) -> None:
+    state_dict = session_state_to_dict(state)
+    application_id = str(state_dict.get("application_id") or "").strip()
     if application_id:
-        _PREP_BY_APPLICATION[application_id] = dict(state)
+        _PREP_BY_APPLICATION[application_id] = state_dict
 
 
 def get_prep_state(application_id: str) -> dict[str, Any] | None:
@@ -76,7 +105,20 @@ def merge_with_prep_state(state: Any) -> dict[str, Any]:
     for key, value in state_dict.items():
         if key == "screening_result":
             continue
+        if key == "github_repo_analyses":
+            continue
         if _is_missing(value) and not _is_missing(merged.get(key)):
             continue
         merged[key] = value
+
+    merged_github = merge_github_repo_analyses(
+        prep.get("github_repo_analyses")
+        if isinstance(prep.get("github_repo_analyses"), dict)
+        else None,
+        state_dict.get("github_repo_analyses")
+        if isinstance(state_dict.get("github_repo_analyses"), dict)
+        else None,
+    )
+    if merged_github is not None:
+        merged["github_repo_analyses"] = merged_github
     return merged

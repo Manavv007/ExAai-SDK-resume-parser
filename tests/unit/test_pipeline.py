@@ -7,7 +7,7 @@ import pytest
 from agent.agent_runner import SCREENING_AGENT_INSTRUCTION
 from agent.config import get_settings
 from agent.pipeline import (
-    SCREENING_AGENT_TOOLS,
+    screening_agent_tools,
     create_screening_agent,
     get_root_agent,
     score_with_validation,
@@ -23,10 +23,10 @@ def _tool_name(tool: object) -> str:
 def test_create_screening_agent_has_tools(test_settings) -> None:
     agent = create_screening_agent()
     assert agent.name == "resume_screener"
-    assert len(agent.tools) == 3
     tool_names = {_tool_name(tool) for tool in agent.tools}
-    expected = {fn.__name__ for fn in SCREENING_AGENT_TOOLS}
+    expected = {fn.__name__ for fn in screening_agent_tools()}
     assert tool_names == expected
+    assert len(agent.tools) == len(expected)
     assert "fetch_profiles" in tool_names
     assert "submit_screening_result" in tool_names
     assert "analyze_github" in tool_names

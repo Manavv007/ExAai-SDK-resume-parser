@@ -75,6 +75,14 @@
       "items": {
         "type": "object"
       }
+    },
+    "top_file_evaluation": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/top_file_evaluation" },
+      "default": []
+    },
+    "evaluation_breakdown": {
+      "$ref": "#/definitions/evaluation_breakdown"
     }
   },
   "allOf": [
@@ -204,6 +212,69 @@
         "code": { "type": "string", "minLength": 1 },
         "message": { "type": "string", "minLength": 1 },
         "source_url": { "type": "string", "format": "uri" }
+      }
+    },
+    "evaluation_breakdown": {
+      "type": "object",
+      "required": ["jd_fit_score", "composite_score"],
+      "additionalProperties": true,
+      "properties": {
+        "jd_fit_score": { "type": "integer", "minimum": 0, "maximum": 100 },
+        "repo_portfolio_score": { "type": ["integer", "null"], "minimum": 0, "maximum": 100 },
+        "code_quality_score": { "type": ["integer", "null"], "minimum": 0, "maximum": 100 },
+        "sandbox_penalty": { "type": "integer", "minimum": 0, "maximum": 100 },
+        "risk_ceiling": { "type": ["integer", "null"], "minimum": 0, "maximum": 100 },
+        "ownership_multiplier_avg": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+        "composite_score": { "type": "integer", "minimum": 0, "maximum": 100 },
+        "final_score": { "type": "integer", "minimum": 0, "maximum": 100 },
+        "final_score_source": {
+          "type": "string",
+          "enum": ["llm_or_rubric", "evaluation_composite"]
+        },
+        "blend_weights": {
+          "type": "object",
+          "additionalProperties": { "type": "number" }
+        },
+        "repos": {
+          "type": "array",
+          "items": { "type": "object" }
+        }
+      }
+    },
+    "top_file_evaluation": {
+      "type": "object",
+      "required": [
+        "repo",
+        "repo_url",
+        "path",
+        "importance_rank",
+        "match_signal",
+        "assessment",
+        "evidence_snippet"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "repo": { "type": "string", "minLength": 1 },
+        "repo_url": { "type": "string", "minLength": 1 },
+        "path": { "type": "string", "minLength": 1 },
+        "importance_rank": { "type": "integer", "minimum": 1 },
+        "classification": { "type": "string" },
+        "language": { "type": "string" },
+        "compaction_tier": { "type": "string" },
+        "total_lines": { "type": "integer", "minimum": 0 },
+        "sent_lines": { "type": "integer", "minimum": 0 },
+        "content_status": { "type": "string" },
+        "jd_criteria": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "default": []
+        },
+        "match_signal": {
+          "type": "string",
+          "enum": ["positive", "neutral", "negative"]
+        },
+        "assessment": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "evidence_snippet": { "type": "string", "minLength": 1, "maxLength": 200 }
       }
     }
   }

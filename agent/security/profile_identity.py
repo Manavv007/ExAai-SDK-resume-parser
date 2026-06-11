@@ -220,6 +220,50 @@ def _tokens_related(a: str, b: str) -> bool:
     return False
 
 
+def _letters_only(value: str) -> str:
+    return re.sub(r"[^a-z]", "", value.lower())
+
+
+def _profile_handles_plausibly_related(left: str, right: str) -> bool:
+    """
+    True when two profile handles likely belong to the same person.
+
+    Covers common cases like Manavv007 (GitHub) vs manavbhavsar0908 (LinkedIn)
+    when Presidio does not extract a resume name.
+    """
+    a = _letters_only(left)
+    b = _letters_only(right)
+    if not a or not b:
+        return False
+    if _tokens_related(a, b):
+        return True
+    shared_prefix = 0
+    for char_a, char_b in zip(a, b, strict=False):
+        if char_a != char_b:
+            break
+        shared_prefix += 1
+    if shared_prefix >= 4:
+        return True
+    shorter, longer = (a, b) if len(a) <= len(b) else (b, a)
+    if len(shorter) >= 4 and shorter in longer:
+        return True
+    return False
+
+
+def _slug_lists_plausibly_same_person(slug_lists: list[list[str]]) -> bool:
+    compact: list[str] = []
+    for tokens in slug_lists:
+        for token in tokens:
+            cleaned = _letters_only(token)
+            if len(cleaned) >= 3:
+                compact.append(cleaned)
+    for i in range(len(compact)):
+        for j in range(i + 1, len(compact)):
+            if _profile_handles_plausibly_related(compact[i], compact[j]):
+                return True
+    return False
+
+
 def _token_sets_related(left: frozenset[str] | set[str], right: frozenset[str] | set[str]) -> bool:
     if not left or not right:
         return False
@@ -241,12 +285,18 @@ def _is_personal_identity_profile_url(url: str) -> bool:
     host = (parsed.netloc or "").lower().replace("www.", "")
     parts = [p for p in parsed.path.split("/") if p]
     if host.endswith("github.com") or host.endswith("gitlab.com"):
-        return bool(parts) and parts[0].lower() not in {
+        if not parts or parts[0].lower() in {
             "orgs",
             "settings",
             "marketplace",
             "topics",
-        }
+            "features",
+            "enterprise",
+            "sponsors",
+        }:
+            return False
+        # Profile root only — repo links (/user/repo/...) are not identity profiles.
+        return len(parts) == 1
     if "linkedin.com" in host:
         return len(parts) >= 2 and parts[0].lower() == "in"
     return any(
@@ -259,8 +309,15 @@ def _explicit_slugs_consistent(slug_lists: list[list[str]]) -> bool:
         return True
     for i in range(len(slug_lists)):
         for j in range(i + 1, len(slug_lists)):
-            if not _token_sets_related(frozenset(slug_lists[i]), frozenset(slug_lists[j])):
-                return False
+            left = frozenset(slug_lists[i])
+            right = frozenset(slug_lists[j])
+            if _token_sets_related(left, right):
+                continue
+            left_compact = next((t for t in slug_lists[i] if _letters_only(t)), "")
+            right_compact = next((t for t in slug_lists[j] if _letters_only(t)), "")
+            if _profile_handles_plausibly_related(left_compact, right_compact):
+                continue
+            return False
     return True
 
 
@@ -347,6 +404,9 @@ def assess_profile_links(
         elif others and _slug_cross_linked(slug_tokens, others):
             trust = ProfileTrust.SCORING_TRUSTED
             reasons.append("profile_cross_linked_with_other_resume_urls")
+        elif not cross_links_ok and _slug_lists_plausibly_same_person(explicit_slug_lists):
+            trust = ProfileTrust.SCORING_LIMITED
+            reasons.append("profile_handles_differ_but_plausibly_same_candidate")
         elif not cross_links_ok:
             trust = ProfileTrust.SCORING_UNTRUSTED
             reasons.append("conflicting_profile_slugs_on_resume")

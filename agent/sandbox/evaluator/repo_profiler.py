@@ -39,12 +39,16 @@ from agent.sandbox.evaluator.text_signal_analyzer import (
     build_documentation_profile,
     count_todo_fixme_density,
 )
+from agent.sandbox.evaluator.top_files import collect_top_files
 from agent.sandbox.evaluator.tree_sitter_analyzer import analyze_non_python_code
+from agent.tools.repo_focus import is_risk_only_evaluation
 
 
 def profile_repository(
     repo_dir: Path,
     stack: list[str],
+    *,
+    focus_spec: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, str]]]:
     package_data = read_package_json(repo_dir)
     framework_markers = detect_framework_markers(repo_dir, package_data)
@@ -112,18 +116,37 @@ def profile_repository(
     semgrep_data = run_semgrep(repo_dir)
     checkov_data = run_checkov(repo_dir)
     hadolint_data = run_hadolint(repo_dir)
-    interrogate_data = run_interrogate(repo_dir)
-    sample_files = collect_sample_files(repo_dir)
-    python_metrics = analyze_python_code(repo_dir) if "python" in stack else {}
-    tree_metrics = (
-        analyze_non_python_code(repo_dir) if any(lang != "python" for lang in stack) else {}
-    )
-    code_metrics = _merge_code_metrics(python_metrics, tree_metrics)
-    code_metrics["todo_fixme_density"] = count_todo_fixme_density(
-        [item["content_preview"] for item in sample_files],
-        sum(item["lines"] for item in sample_files),
-    )
-    code_metrics["lint_violations_per_kloc"] = tree_metrics.get("lint_violations_per_kloc")
+    risk_only = is_risk_only_evaluation(focus_spec)
+    if risk_only:
+        interrogate_data = {}
+        sample_files: list[dict[str, Any]] = []
+        top_files: list[dict[str, Any]] = []
+        code_metrics = {
+            "avg_cyclomatic_complexity": None,
+            "avg_function_length": None,
+            "type_annotation_ratio": None,
+            "error_handling_density": None,
+            "todo_fixme_density": 0.0,
+            "lint_violations_per_kloc": None,
+        }
+    else:
+        interrogate_data = run_interrogate(repo_dir)
+        sample_files = collect_sample_files(repo_dir, focus_spec)
+        top_files = collect_top_files(
+            repo_dir,
+            focus_spec,
+            max_files=int((focus_spec or {}).get("top_files_count") or 5),
+        )
+        python_metrics = analyze_python_code(repo_dir) if "python" in stack else {}
+        tree_metrics = (
+            analyze_non_python_code(repo_dir) if any(lang != "python" for lang in stack) else {}
+        )
+        code_metrics = _merge_code_metrics(python_metrics, tree_metrics)
+        code_metrics["todo_fixme_density"] = count_todo_fixme_density(
+            [item["content_preview"] for item in sample_files],
+            sum(item["lines"] for item in sample_files),
+        )
+        code_metrics["lint_violations_per_kloc"] = tree_metrics.get("lint_violations_per_kloc")
     dockerfile_present = has_dockerfile(repo_dir)
     docker_compose_present = has_docker_compose(repo_dir)
     docker_present = has_docker_config(repo_dir)
@@ -171,8 +194,12 @@ def profile_repository(
         "lint_violations_per_kloc": code_metrics["lint_violations_per_kloc"],
         "secret_pattern_hits": security_profile["secret_pattern_hits"],
         "sample_files": sample_files,
+        "top_files": top_files,
     }
+    if risk_only:
+        repo_profile["evaluation_mode"] = "risk_only"
 
+    repo_role = str((focus_spec or {}).get("repo_role") or "unknown")
     findings = _build_findings(
         has_tests=has_tests,
         has_ci=has_ci,
@@ -193,6 +220,7 @@ def profile_repository(
         checkov_data=checkov_data,
         hadolint_data=hadolint_data,
         interrogate_data=interrogate_data,
+        repo_role=repo_role,
     )
     return repo_profile, findings
 
@@ -276,29 +304,34 @@ def _build_findings(
     checkov_data: dict[str, Any] | None,
     hadolint_data: dict[str, Any] | None,
     interrogate_data: dict[str, Any] | None,
+    repo_role: str = "unknown",
 ) -> list[dict[str, str]]:
     findings: list[dict[str, str]] = []
-    findings.append(
-        {
-            "severity": "info" if has_tests else "warn",
-            "category": "tests",
-            "title": (
-                "Repository includes an automated test surface."
-                if has_tests
-                else "Repository does not expose an obvious automated test suite."
-            ),
-            "evidence": (
-                "Test directories/files detected."
-                if has_tests
-                else "No common test paths were detected."
-            ),
-            "impact": (
-                "Gives us a direct way to validate candidate code behavior."
-                if has_tests
-                else "Reduces confidence in correctness and makes evaluation shallower."
-            ),
-        }
-    )
+    role = str(repo_role or "unknown").lower()
+    penalize_missing_tests = role in ("aligned", "adjacent")
+
+    if has_tests:
+        findings.append(
+            {
+                "severity": "info",
+                "category": "tests",
+                "title": "Repository includes an automated test surface.",
+                "evidence": "Test directories/files detected.",
+                "impact": "Gives us a direct way to validate candidate code behavior.",
+            }
+        )
+    elif penalize_missing_tests:
+        findings.append(
+            {
+                "severity": "warn",
+                "category": "tests",
+                "title": "Repository does not expose an obvious automated test suite.",
+                "evidence": "No common test paths were detected.",
+                "impact": (
+                    "Reduces confidence in correctness for this role-aligned repository."
+                ),
+            }
+        )
     if has_ci:
         findings.append(
             {
@@ -411,79 +444,66 @@ def _build_findings(
             }
         )
     pip_summary = _summarize_pip_audit(pip_audit_data)
-    if pip_summary["vulnerability_count"] is not None:
+    if pip_summary["vulnerability_count"]:
         findings.append(
             {
-                "severity": "warn" if pip_summary["vulnerability_count"] else "info",
+                "severity": "warn",
                 "category": "risk",
-                "title": "Python dependency audit was available.",
+                "title": "Python dependency audit reported known vulnerabilities.",
                 "evidence": f"pip_audit_vulnerabilities={pip_summary['vulnerability_count']}",
                 "impact": "Known package vulnerabilities are a direct maintenance signal.",
             }
         )
     npm_summary = _summarize_npm_audit(npm_audit_data)
-    if npm_summary["vulnerability_count"] is not None:
+    if npm_summary["vulnerability_count"]:
         findings.append(
             {
-                "severity": "warn" if npm_summary["vulnerability_count"] else "info",
+                "severity": "warn",
                 "category": "risk",
-                "title": "Node dependency audit was available.",
+                "title": "Node dependency audit reported known vulnerabilities.",
                 "evidence": f"npm_audit_vulnerabilities={npm_summary['vulnerability_count']}",
                 "impact": "Detects dependency risk without fully installing the repo.",
             }
         )
-    if trivy_summary["vulnerability_count"] is not None:
+    if trivy_summary["vulnerability_count"]:
         findings.append(
             {
-                "severity": "warn" if trivy_summary["vulnerability_count"] else "info",
+                "severity": "warn",
                 "category": "risk",
-                "title": "Dependency vulnerability scan was available.",
+                "title": "Dependency vulnerability scan reported known CVEs.",
                 "evidence": f"trivy_vulnerability_count={trivy_summary['vulnerability_count']}",
                 "impact": "Known CVEs are a useful maturity and maintenance signal.",
             }
         )
     semgrep_summary = _summarize_semgrep(semgrep_data)
-    if semgrep_summary["result_count"] is not None:
-        if semgrep_summary["result_count"]:
-            findings.append(
-                {
-                    "severity": "warn",
-                    "category": "risk",
-                    "title": "Semgrep reported potential secret or security issues.",
-                    "evidence": f"semgrep_results={semgrep_summary['result_count']}",
-                    "impact": "Automated secret and security rules flagged patterns in the repo.",
-                }
-            )
-        else:
-            findings.append(
-                {
-                    "severity": "info",
-                    "category": "quality",
-                    "title": "Semgrep security scan completed with no matches.",
-                    "evidence": "semgrep_results=0",
-                    "impact": (
-                        "No Semgrep secret/security rule matches were found in scanned files."
-                    ),
-                }
-            )
-    checkov_summary = _summarize_checkov(checkov_data)
-    if checkov_summary["failed_checks"] is not None:
+    if semgrep_summary["result_count"]:
         findings.append(
             {
-                "severity": "warn" if checkov_summary["failed_checks"] else "info",
+                "severity": "warn",
                 "category": "risk",
-                "title": "Infrastructure configuration scan was available.",
+                "title": "Semgrep reported potential secret or security issues.",
+                "evidence": f"semgrep_results={semgrep_summary['result_count']}",
+                "impact": "Automated secret and security rules flagged patterns in the repo.",
+            }
+        )
+    checkov_summary = _summarize_checkov(checkov_data)
+    if checkov_summary["failed_checks"]:
+        findings.append(
+            {
+                "severity": "warn",
+                "category": "risk",
+                "title": "Infrastructure configuration scan reported failed checks.",
                 "evidence": f"checkov_failed_checks={checkov_summary['failed_checks']}",
                 "impact": "IaC hygiene is relevant for infra-heavy and production-facing repos.",
             }
         )
     hadolint_summary = _summarize_hadolint(hadolint_data)
-    if hadolint_summary["issue_count"] is not None:
+    if hadolint_summary["issue_count"]:
         findings.append(
             {
-                "severity": "warn" if hadolint_summary["issue_count"] else "info",
+                "severity": "warn",
                 "category": "risk",
-                "title": "Dockerfile lint scan was available.",
+                "title": "Dockerfile lint scan reported issues.",
                 "evidence": f"hadolint_issues={hadolint_summary['issue_count']}",
                 "impact": "Container hygiene is relevant for deployable service repos.",
             }

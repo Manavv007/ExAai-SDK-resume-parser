@@ -13,6 +13,8 @@ from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from agent.adk_tools import (
     analyze_github,
     fetch_profiles,
+    get_github_repo_structures,
+    run_sandbox_analysis,
     submit_screening_result,
 )
 from agent.agent_runner import SCREENING_AGENT_INSTRUCTION
@@ -28,8 +30,16 @@ from agent.llm_client import (
 )
 from agent.prep import prepare_screening_state, retrieve_github_thread
 from agent.prep_context import clear_prep_state, register_prep_state
-from agent.sandbox_gating import ensure_sandbox_before_scoring
+from agent.sandbox_gating import (
+    agent_evidence_orchestration_active,
+    await_sandbox_for_scoring,
+    clear_sandbox_task,
+    ensure_sandbox_before_scoring,
+    sandbox_overlap_active,
+    start_sandbox_task,
+)
 from agent.session_state import SESSION_STATE_KEYS
+from agent.tools.sandbox_scoring import reconcile_sandbox_penalty_in_result
 from agent.tools.scorer import (
     attach_temp_sandbox_reports,
     build_failed_result,
@@ -37,11 +47,21 @@ from agent.tools.scorer import (
 )
 from agent.tools.validator import validate_result_detailed
 
-SCREENING_AGENT_TOOLS = [
-    fetch_profiles,
-    submit_screening_result,
-    analyze_github,
-]
+def _screening_agent_tools() -> list[Any]:
+    tools: list[Any] = [
+        fetch_profiles,
+        submit_screening_result,
+        analyze_github,
+    ]
+    if agent_evidence_orchestration_active():
+        tools.insert(0, get_github_repo_structures)
+        tools.insert(2, run_sandbox_analysis)
+    return tools
+
+
+def screening_agent_tools() -> list[Any]:
+    """Return ADK tools for the current settings."""
+    return _screening_agent_tools()
 
 
 def _counting_before_model_callback(callback_context: Any, llm_request: Any) -> Any:
@@ -73,7 +93,7 @@ def create_screening_agent(
         "model": create_adk_model(settings),
         "description": "Screens resumes with Exa-backed profile enrichment and structured verdict",
         "instruction": SCREENING_AGENT_INSTRUCTION,
-        "tools": SCREENING_AGENT_TOOLS,
+        "tools": screening_agent_tools(),
         "before_model_callback": chained_before_model_callback,
     }
     return Agent(**agent_kwargs)
@@ -112,6 +132,7 @@ def score_with_validation(
     *,
     max_attempts: int = 2,
     max_llm_attempts: int | None = None,
+    compact_sandbox_prompt: bool = False,
 ) -> dict[str, Any]:
     """
     Score and validate; retry once with correction prompt on schema failure.
@@ -122,7 +143,11 @@ def score_with_validation(
         if correction:
             state["correction_prompt"] = correction
 
-        result = score_screening_from_state(state, max_llm_attempts=max_llm_attempts)
+        result = score_screening_from_state(
+            state,
+            max_llm_attempts=max_llm_attempts,
+            compact_sandbox_prompt=compact_sandbox_prompt,
+        )
         outcome = validate_result_detailed(result)
         if outcome.ok:
             if result.get("resume_screening_status") != "failed":
@@ -168,6 +193,7 @@ async def run_screening_pipeline_async(state: dict[str, Any]) -> dict[str, Any]:
     from agent.enrichment import enrich_profile_urls_async
 
     await enrich_profile_urls_async(state)
+    await await_sandbox_for_scoring(state)
     return score_with_validation(state)
 
 
@@ -208,9 +234,16 @@ async def run_screening_async(
 
     application_id = str(state.get("application_id") or "")
     register_prep_state(state)
+    result: dict[str, Any] = {}
     try:
         await _await_github_prep(application_id)
-        await ensure_sandbox_before_scoring(state)
+
+        if not agent_evidence_orchestration_active(settings):
+            if sandbox_overlap_active():
+                start_sandbox_task(state)
+            else:
+                await ensure_sandbox_before_scoring(state)
+
         register_prep_state(state)
 
         if screening_mode == "agent":
@@ -220,6 +253,9 @@ async def run_screening_async(
         else:
             result = await run_screening_pipeline_async(state)
     finally:
+        await await_sandbox_for_scoring(state)
+        register_prep_state(state)
+        clear_sandbox_task(application_id)
         clear_prep_state(application_id)
 
     state["processing_time_ms"] = _elapsed_ms(start)
@@ -230,7 +266,9 @@ async def run_screening_async(
     metadata["processing_time_ms"] = state["processing_time_ms"]
     result["metadata"] = attach_llm_usage_metadata(metadata)
 
-    attach_temp_sandbox_reports(result, state.get("github_repo_analyses"))
+    github_repo_analyses = state.get("github_repo_analyses")
+    result = reconcile_sandbox_penalty_in_result(result, github_repo_analyses)
+    attach_temp_sandbox_reports(result, github_repo_analyses)
     result = schedule_deferred_sandbox_finalization(state, result)
     log_screening_result(state, result, request_id=request_id)
     return result

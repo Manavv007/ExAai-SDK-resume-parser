@@ -48,6 +48,12 @@ ENV PYTHONPATH=/app
 COPY agent/__init__.py /app/agent/__init__.py
 COPY agent/config.py /app/agent/config.py
 COPY agent/sandbox /app/agent/sandbox
+# Avoid importing cloud_run_provider/config bootstrap (needs api-only modules).
+RUN printf '%s\n' '"""Sandbox evaluator image package stub."""' > /app/agent/sandbox/__init__.py
+# Evaluator imports agent.tools.repo_focus (top_files, risk_only, file sampling).
+RUN mkdir -p /app/agent/tools
+COPY agent/tools/repo_focus.py /app/agent/tools/repo_focus.py
+RUN printf '%s\n' '"""Minimal tools package for sandbox evaluator image."""' > /app/agent/tools/__init__.py
 
 RUN python -m pip install --no-cache-dir --upgrade pip \
     && python -m pip install --no-cache-dir \

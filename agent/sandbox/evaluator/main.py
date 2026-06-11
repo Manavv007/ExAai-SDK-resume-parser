@@ -25,6 +25,7 @@ def evaluate_repository(
     output_uri: str | None = None,
     timeout_seconds: int = 300,
     commands: list[SandboxCommand] | None = None,
+    file_focus: dict[str, Any] | None = None,
 ) -> RepoExecutionReport:
     """Clone and profile one repository in the current Cloud Run job container."""
     workspace = Path(tempfile.mkdtemp(prefix="exaai-evaluator-"))
@@ -52,8 +53,10 @@ def evaluate_repository(
             )
 
         detected_stack, quality_signals, risk_flags, repo_profile, static_findings = (
-            detect_project(repo_dir)
+            detect_project(repo_dir, focus_spec=file_focus)
         )
+        if file_focus:
+            repo_profile["file_focus"] = file_focus
         if commands:
             command_results.extend(
                 CommandResult(
@@ -123,6 +126,7 @@ def main(argv: list[str] | None = None) -> int:
         default=int(os.environ.get("SANDBOX_TIMEOUT_SECONDS", "300")),
     )
     parser.add_argument("--command-plan-json", default=os.environ.get("COMMAND_PLAN_JSON", ""))
+    parser.add_argument("--file-focus-json", default=os.environ.get("FILE_FOCUS_JSON", ""))
     args = parser.parse_args(argv)
 
     if not args.repo_url:
@@ -131,12 +135,14 @@ def main(argv: list[str] | None = None) -> int:
         args.repo_name = _repo_name_from_url(args.repo_url)
 
     commands = _commands_from_json(args.command_plan_json)
+    file_focus = _file_focus_from_json(args.file_focus_json)
     report = evaluate_repository(
         repo_url=args.repo_url,
         repo_name=args.repo_name,
         output_uri=args.output_uri or None,
         timeout_seconds=args.timeout_seconds,
         commands=commands,
+        file_focus=file_focus,
     )
 
     if args.output_uri:
@@ -194,6 +200,15 @@ def _commands_from_json(raw: str) -> list[SandboxCommand] | None:
     if not isinstance(data, list):
         raise ValueError("COMMAND_PLAN_JSON must be a list")
     return [SandboxCommand(step=str(item["step"]), command=str(item["command"])) for item in data]
+
+
+def _file_focus_from_json(raw: str) -> dict[str, Any] | None:
+    if not raw:
+        return None
+    data = json.loads(raw)
+    if not isinstance(data, dict):
+        raise ValueError("FILE_FOCUS_JSON must be an object")
+    return data
 
 
 def _repo_name_from_url(repo_url: str) -> str:
@@ -273,17 +288,6 @@ def _build_execution_findings(
                 "title": "Repository includes a potentially risky automation hook.",
                 "evidence": risk_flag,
                 "impact": "Needs a quick manual look before we trust the repo's setup path.",
-            }
-        )
-
-    if quality_signals.get("has_docs"):
-        findings.append(
-            {
-                "severity": "info",
-                "category": "quality",
-                "title": "Repository includes developer-facing documentation.",
-                "evidence": "README or docs directory detected.",
-                "impact": "Suggests some attention to maintainability and onboarding.",
             }
         )
 

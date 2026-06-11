@@ -92,6 +92,29 @@ def test_requirement_matches_need_rescore_detects_role_fit_placeholder() -> None
     assert requirement_matches_need_rescore(matches, []) is True
 
 
+def test_requirement_matches_need_rescore_detects_placeholder_requirement_rows() -> None:
+    rubric = [
+        {"criterion": "Python fundamentals", "weight": "must_have", "requirement_type": "technical_skill"},
+        {"criterion": "REST APIs", "weight": "must_have", "requirement_type": "technical_skill"},
+    ]
+    matches = [
+        {
+            "requirement": "requirement",
+            "requirement_type": "technical_skill",
+            "match_score": 100,
+            "evidence": "No explicit evidence found in resume or profiles.",
+        },
+        {
+            "requirement": "requirement",
+            "requirement_type": "technical_skill",
+            "match_score": 100,
+            "evidence": "No explicit evidence found in resume or profiles.",
+        },
+    ]
+
+    assert requirement_matches_need_rescore(matches, rubric) is True
+
+
 def test_merge_with_prep_state_restores_rubric_for_submit() -> None:
     from agent.prep_context import clear_prep_state, merge_with_prep_state, register_prep_state
 

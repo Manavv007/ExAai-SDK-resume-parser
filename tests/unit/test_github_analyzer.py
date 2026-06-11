@@ -252,7 +252,7 @@ def test_select_sandbox_repo_urls_uses_all_resume_repos_before_fallback() -> Non
 @pytest.mark.asyncio
 async def test_evaluate_sandbox_repos_runs_provider_in_parallel() -> None:
     class FakeProvider:
-        async def evaluate_repo(self, *, repo_url, repo_name, commands):
+        async def evaluate_repo(self, *, repo_url, repo_name, commands, file_focus=None):
             return RepoExecutionReport(
                 repo=repo_name,
                 url=repo_url,
@@ -285,7 +285,7 @@ async def test_evaluate_sandbox_repos_preserves_fast_results_on_batch_timeout() 
         def __init__(self) -> None:
             self.calls: list[str] = []
 
-        async def evaluate_repo(self, *, repo_url, repo_name, commands):
+        async def evaluate_repo(self, *, repo_url, repo_name, commands, file_focus=None):
             self.calls.append(repo_url)
             if repo_url.endswith("/slow"):
                 await asyncio.sleep(1)
@@ -314,7 +314,7 @@ async def test_evaluate_sandbox_repos_preserves_fast_results_on_batch_timeout() 
 @pytest.mark.asyncio
 async def test_evaluate_sandbox_repos_returns_timeout_reports() -> None:
     class SlowProvider:
-        async def evaluate_repo(self, *, repo_url, repo_name, commands):
+        async def evaluate_repo(self, *, repo_url, repo_name, commands, file_focus=None):
             await asyncio.sleep(1)
             return RepoExecutionReport(repo=repo_name, url=repo_url, clone_ok=True)
 

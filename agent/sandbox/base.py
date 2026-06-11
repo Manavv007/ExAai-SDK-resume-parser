@@ -25,5 +25,6 @@ class SandboxProvider(Protocol):
         repo_url: str,
         repo_name: str,
         commands: list[SandboxCommand],
+        file_focus: dict | None = None,
     ) -> RepoExecutionReport:
         """Evaluate ``repo_url`` and return bounded evidence."""
