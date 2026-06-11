@@ -6,8 +6,6 @@ import logging
 import re
 from typing import Any
 
-logger = logging.getLogger("exaai_adk.adk_tools")
-
 from google.adk.tools.tool_context import ToolContext
 
 from agent.config import get_settings
@@ -28,6 +26,8 @@ from agent.tools.repo_focus import (
     validate_orchestrated_sandbox_repo_spec,
     validate_repo_focus_paths,
 )
+
+logger = logging.getLogger("exaai_adk.adk_tools")
 
 
 def list_candidate_profile_urls(tool_context: ToolContext) -> dict[str, Any]:
@@ -242,7 +242,11 @@ async def run_risk_only_sandbox_pre_pass(state: dict[str, Any]) -> bool:
         selected_urls,
         list(github.get("sandbox_reports") or []) + reports,
     )
-    by_url = {str(item.get("url")): item for item in merged_reports if isinstance(item, dict) and item.get("url")}
+    by_url = {
+        str(item.get("url")): item
+        for item in merged_reports
+        if isinstance(item, dict) and item.get("url")
+    }
     for url in requested_urls:
         for report in reports:
             if str(report.get("url") or "") == url:
@@ -373,9 +377,7 @@ async def execute_sandbox_analysis_for_state(
                 )
             )
 
-        repo_role = str(
-            spec.get("classification") or structure_classification or "peripheral"
-        )
+        repo_role = str(spec.get("classification") or structure_classification or "peripheral")
         max_files = int(getattr(settings, "sandbox_focus_max_files", 12) or 12)
         if orchestration_active and (agent_focus or allow_empty_focus_paths):
             max_files = focus_path_limit
@@ -386,9 +388,7 @@ async def execute_sandbox_analysis_for_state(
             agent_focus_paths=agent_focus,
             max_files=max_files,
         )
-        focus_spec["top_files_count"] = int(
-            getattr(settings, "sandbox_top_files_count", 5) or 5
-        )
+        focus_spec["top_files_count"] = int(getattr(settings, "sandbox_top_files_count", 5) or 5)
         focus_by_url[repo_url] = focus_spec
         requested_urls.append(repo_url)
 
@@ -397,7 +397,8 @@ async def execute_sandbox_analysis_for_state(
             "ok": False,
             "error": "invalid_sandbox_repo_spec",
             "message": (
-                "Fix repo_specs before retrying run_sandbox_analysis: call get_github_repo_structures "
+                "Fix repo_specs before retrying run_sandbox_analysis: "
+                "call get_github_repo_structures "
                 f"first, copy classification exactly, and provide 1-{focus_path_limit} existing "
                 "focus_paths per repo."
             ),
@@ -419,7 +420,9 @@ async def execute_sandbox_analysis_for_state(
     for report in reports:
         url = str(report.get("url") or "")
         if url and url in focus_by_url:
-            profile = report.get("repo_profile") if isinstance(report.get("repo_profile"), dict) else {}
+            profile = (
+                report.get("repo_profile") if isinstance(report.get("repo_profile"), dict) else {}
+            )
             profile["repo_role"] = focus_by_url[url].get("repo_role")
             report["repo_profile"] = profile
             report["classification"] = focus_by_url[url].get("repo_role")
@@ -429,7 +432,11 @@ async def execute_sandbox_analysis_for_state(
         selected_urls,
         list(github.get("sandbox_reports") or []) + reports,
     )
-    by_url = {str(item.get("url")): item for item in merged_reports if isinstance(item, dict) and item.get("url")}
+    by_url = {
+        str(item.get("url")): item
+        for item in merged_reports
+        if isinstance(item, dict) and item.get("url")
+    }
     for url in requested_urls:
         for report in reports:
             if str(report.get("url") or "") == url:
@@ -476,9 +483,7 @@ def _github_repo_urls_from_state(state: dict[str, Any]) -> list[str]:
     if not isinstance(github, dict):
         return []
     urls = list(
-        github.get("selected_sandbox_repo_urls")
-        or github.get("resume_github_repo_urls")
-        or []
+        github.get("selected_sandbox_repo_urls") or github.get("resume_github_repo_urls") or []
     )
     if not urls:
         for item in github.get("repo_analyses") or []:
@@ -513,13 +518,17 @@ async def _fetch_repo_tree_paths(repo_url: str) -> tuple[list[str], dict[str, An
 
     async with GitHubClient() as client:
         meta = await client.get_repo_meta(owner, repo)
-        tree = await client.get_repo_tree(owner, repo, branch=meta.default_branch if meta else "main")
+        tree = await client.get_repo_tree(
+            owner, repo, branch=meta.default_branch if meta else "main"
+        )
         languages = await client.get_repo_languages(owner, repo)
     file_paths = [entry.path for entry in tree if getattr(entry, "type", "blob") == "blob"]
     language_pct: dict[str, float] = {}
     total = sum(languages.values()) if languages else 0
     if total > 0:
-        language_pct = {name: round((value / total) * 100.0, 1) for name, value in languages.items()}
+        language_pct = {
+            name: round((value / total) * 100.0, 1) for name, value in languages.items()
+        }
     return file_paths, {
         "languages": language_pct,
         "repo_type_tags": [],

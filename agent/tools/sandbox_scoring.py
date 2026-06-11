@@ -62,9 +62,7 @@ def repo_sandbox_risk_penalty(report: dict[str, Any]) -> int:
     penalty = 0
     profile = report.get("repo_profile") if isinstance(report.get("repo_profile"), dict) else {}
     security = (
-        profile.get("security_profile")
-        if isinstance(profile.get("security_profile"), dict)
-        else {}
+        profile.get("security_profile") if isinstance(profile.get("security_profile"), dict) else {}
     )
     findings = report.get("findings") if isinstance(report.get("findings"), list) else []
 
@@ -109,9 +107,7 @@ def repo_sandbox_score_ceiling(report: dict[str, Any]) -> int | None:
 
     profile = report.get("repo_profile") if isinstance(report.get("repo_profile"), dict) else {}
     security = (
-        profile.get("security_profile")
-        if isinstance(profile.get("security_profile"), dict)
-        else {}
+        profile.get("security_profile") if isinstance(profile.get("security_profile"), dict) else {}
     )
     findings = report.get("findings") if isinstance(report.get("findings"), list) else []
     vuln_total = _vulnerability_total(report)

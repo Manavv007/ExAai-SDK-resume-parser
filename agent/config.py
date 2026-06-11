@@ -24,6 +24,7 @@ def _apply_dotenv_overrides() -> None:
     except ImportError:
         pass
 
+
 ScreeningMode = Literal["pipeline", "agent"]
 LlmProvider = Literal["gemini", "openrouter", "groq", "auto"]
 SandboxProvider = Literal["cloud_run", "docker", "e2b", "upstash_box"]
@@ -264,13 +265,18 @@ class Settings(BaseSettings):
         default=0.0,
         ge=0.0,
         le=1.0,
-        description="LLM sampling temperature for scoring and structured JSON calls (0 = most stable).",
+        description=(
+            "LLM sampling temperature for scoring and structured JSON calls (0 = most stable)."
+        ),
     )
     scoring_score_step: int = Field(
         default=5,
         ge=1,
         le=25,
-        description="Quantize requirement match_score and final overall score to this step (e.g. 5 → 70, 75, 80).",
+        description=(
+            "Quantize requirement match_score and final overall score to this step "
+            "(e.g. 5 -> 70, 75, 80)."
+        ),
     )
     scoring_rubric_derived: bool = Field(
         default=True,
@@ -285,7 +291,8 @@ class Settings(BaseSettings):
         default=True,
         description=(
             "Pre-fetch resume profile URLs via Exa before agent scoring. "
-            "Populates enriched_contents and sources_crawled even when the agent skips fetch_profiles."
+            "Populates enriched_contents and sources_crawled even when the agent "
+            "skips fetch_profiles."
         ),
     )
     profile_scoring_mode: str = Field(

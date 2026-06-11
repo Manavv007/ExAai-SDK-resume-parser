@@ -180,9 +180,7 @@ def test_screen_returns_202_for_processing_result(
     assert response.json()["resume_screening_status"] == "processing"
 
 
-def test_get_screening_result_returns_persisted_record(
-    client: TestClient, test_settings
-) -> None:
+def test_get_screening_result_returns_persisted_record(client: TestClient, test_settings) -> None:
     ScreeningResultStore().save(
         application_id=FIXTURE_APP_ID,
         job_id=FIXTURE_JOB_ID,

@@ -52,8 +52,8 @@ def evaluate_repository(
                 confidence="low",
             )
 
-        detected_stack, quality_signals, risk_flags, repo_profile, static_findings = (
-            detect_project(repo_dir, focus_spec=file_focus)
+        detected_stack, quality_signals, risk_flags, repo_profile, static_findings = detect_project(
+            repo_dir, focus_spec=file_focus
         )
         if file_focus:
             repo_profile["file_focus"] = file_focus

@@ -189,9 +189,7 @@ class CloudRunSandboxProvider:
                 )
         if response.status_code >= 400:
             detail = response.text.strip()
-            raise RuntimeError(
-                f"Cloud Run API {response.status_code} for {url}: {detail[:2000]}"
-            )
+            raise RuntimeError(f"Cloud Run API {response.status_code} for {url}: {detail[:2000]}")
         data = response.json()
         if not isinstance(data, dict):
             raise RuntimeError("Cloud Run API response was not a JSON object")
@@ -218,7 +216,10 @@ class CloudRunSandboxProvider:
         return await asyncio.to_thread(self._load_access_token)
 
     def _load_access_token(self) -> str:
-        from agent.gcp_credentials import access_token_from_credentials, load_sandbox_gcp_credentials
+        from agent.gcp_credentials import (
+            access_token_from_credentials,
+            load_sandbox_gcp_credentials,
+        )
 
         credentials = load_sandbox_gcp_credentials(self._settings)
         return access_token_from_credentials(credentials)

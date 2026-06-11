@@ -140,7 +140,10 @@ async def test_run_sandbox_analysis_merges_reports(
 
     assert result["ok"] is True
     assert ctx.state["sandbox_completed_by_agent"] is True
-    assert ctx.state["github_repo_analyses"]["sandbox_reports"][0]["url"] == "https://github.com/dev/service"
+    assert (
+        ctx.state["github_repo_analyses"]["sandbox_reports"][0]["url"]
+        == "https://github.com/dev/service"
+    )
 
 
 @pytest.mark.asyncio
@@ -446,7 +449,9 @@ async def test_agent_sandbox_clears_risk_only_pre_pass_flag(
             "username": "dev",
             "candidate_tags": ["backend_engineer"],
             "selected_sandbox_repo_urls": ["https://github.com/dev/service"],
-            "sandbox_reports": [{"url": "https://github.com/dev/service", "evaluation_mode": "risk_only"}],
+            "sandbox_reports": [
+                {"url": "https://github.com/dev/service", "evaluation_mode": "risk_only"}
+            ],
             "sandbox_risk_only_pre_pass": True,
         },
         "sandbox_risk_only_pre_pass": True,

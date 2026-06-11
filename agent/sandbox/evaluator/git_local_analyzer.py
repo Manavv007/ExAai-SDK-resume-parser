@@ -73,9 +73,7 @@ def calculate_git_metrics(repo_dir: Path) -> dict[str, Any]:
             )
             merge_count = 0
             if res_merges.returncode == 0:
-                merge_count = sum(
-                    1 for line in res_merges.stdout.splitlines() if line.strip()
-                )
+                merge_count = sum(1 for line in res_merges.stdout.splitlines() if line.strip())
             metrics["merge_to_commit_ratio"] = round(
                 merge_count / metrics["commit_count"],
                 4,

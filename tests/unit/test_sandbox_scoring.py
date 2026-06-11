@@ -4,8 +4,12 @@ from __future__ import annotations
 
 import pytest
 
+from agent.prep_context import (
+    merge_github_repo_analyses,
+    merge_with_prep_state,
+    register_prep_state,
+)
 from agent.tools.rubric_builder import build_rubric_bundle
-from agent.prep_context import merge_github_repo_analyses, merge_with_prep_state, register_prep_state
 from agent.tools.sandbox_scoring import (
     apply_sandbox_score_penalty,
     compute_sandbox_score_ceiling,
@@ -221,7 +225,8 @@ def test_reconcile_sandbox_penalty_applies_missed_penalty(deterministic_sandbox_
     reconciled = reconcile_sandbox_penalty_in_result(result, github)
 
     assert reconciled["resume_similarity_score"]["score"] < 77
-    assert "Sandbox repo review reduced the score" in reconciled["resume_similarity_score"]["reasoning"]
+    reasoning = reconciled["resume_similarity_score"]["reasoning"]
+    assert "Sandbox repo review reduced the score" in reasoning
 
 
 def test_reconcile_sandbox_penalty_is_idempotent(deterministic_sandbox_scoring) -> None:
@@ -230,7 +235,9 @@ def test_reconcile_sandbox_penalty_is_idempotent(deterministic_sandbox_scoring) 
     result = {
         "resume_similarity_score": {
             "score": 70,
-            "reasoning": "Sandbox repo review reduced the score by 5 points due to engineering-risk signals.",
+            "reasoning": (
+                "Sandbox repo review reduced the score by 5 points due to engineering-risk signals."
+            ),
         },
         "metadata": {},
     }

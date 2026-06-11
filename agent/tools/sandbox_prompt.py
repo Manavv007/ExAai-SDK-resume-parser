@@ -70,12 +70,16 @@ def format_sandbox_reports_for_prompt(
         eval_mode = report.get("evaluation_mode") or (
             (report.get("repo_profile") or {}).get("evaluation_mode")
         )
-        mode_note = " [risk-only: vulns/secrets, no file excerpts]" if eval_mode == "risk_only" else ""
+        mode_note = (
+            " [risk-only: vulns/secrets, no file excerpts]" if eval_mode == "risk_only" else ""
+        )
+        secret_hits = security.get("secret_pattern_hits") or profile.get("secret_pattern_hits") or 0
         lines.append(
             f"- {report.get('repo') or report.get('url')}{mode_note}\n"
-            f"  classification={role}, risk_tier={risk_tier}, clone_ok={report.get('clone_ok')}, "
+            f"  classification={role}, risk_tier={risk_tier}, "
+            f"clone_ok={report.get('clone_ok')}, "
             f"secret_hygiene={security.get('secret_hygiene')}, "
-            f"secret_hits={security.get('secret_pattern_hits') or profile.get('secret_pattern_hits') or 0}, "
+            f"secret_hits={secret_hits}, "
             f"combined_vulnerabilities={vuln_count}, "
             f"high_findings={len(high_findings)}, "
             f"warnings={len(warn_findings)}\n"
@@ -138,28 +142,34 @@ def _format_sample_files(sample_files: Any) -> str:
         status = item.get("content_status") or "unknown"
         source = item.get("source") or "sample"
         preview = str(item.get("content_preview") or "").strip().replace("\n", " ")[:180]
-        lines.append(
-            f"    - {item.get('path')} [{source}, {status}]: {preview or '(empty)'}"
-        )
+        lines.append(f"    - {item.get('path')} [{source}, {status}]: {preview or '(empty)'}")
     return "\n".join(lines)
 
 
 SANDBOX_LLM_SCORING_RULES = """\
 Sandbox scoring rules (when SANDBOX REPORTS are present):
-- Read every sandbox repo summary, risk_tier, and focused file excerpts before submit_screening_result.
-- Repo classifications: aligned (strict), adjacent (moderate), peripheral (low weight), orthogonal (exclude role depth).
-- Do NOT lower scores only because a repo lacks tests or CI (common for coursework, DSA, or HDL repos).
+- Read every sandbox repo summary, risk_tier, and focused file excerpts before
+  submit_screening_result.
+- Repo classifications: aligned (strict), adjacent (moderate), peripheral (low weight),
+  orthogonal (exclude role depth).
+- Do NOT lower scores only because a repo lacks tests or CI
+  (common for coursework, DSA, or HDL repos).
 - Lower scores when aligned repos show hollow/stub/empty focused files where substance was expected.
-- Treat aligned/adjacent repos with risk_tier SEVERE or CRITICAL as major negatives — not offset by other repos.
+- Treat aligned/adjacent repos with risk_tier SEVERE or CRITICAL as major negatives —
+  not offset by other repos.
 - Score bands for aligned repos (resume_similarity_score guidance before system caps):
-  * CRITICAL (50+ combined vulns, or weak secret hygiene with 20+ vulns): overall score should be 60-65.
+  * CRITICAL (50+ combined vulns, or weak secret hygiene with 20+ vulns):
+    overall score should be 60-65.
   * SEVERE (weak secrets + high findings, or 50+ vulns): overall score should be 62-68.
   * ELEVATED (20+ vulns or high-severity findings): overall score should be 68-75.
-- Orthogonal repos (e.g. coursework DBMS) must not inflate scores; missing tests/CI there is neutral.
+- Orthogonal repos (e.g. coursework DBMS) must not inflate scores;
+  missing tests/CI there is neutral.
 - Penalize resume claim vs repo evidence gaps when the resume oversells a repo.
-- Cite sandbox evidence in requirement_matches or resume_similarity_score.reasoning when it affects judgment.
+- Cite sandbox evidence in requirement_matches or resume_similarity_score.reasoning
+  when it affects judgment.
 - For each sandbox top_files path, add a top_file_evaluation row at submit with jd_criteria,
   match_signal (positive|neutral|negative), and assessment tied to the JD. The server fills
   compaction metadata and evidence_snippet; only include rows for paths present in top_files.
-- The platform applies mandatory risk caps for severe aligned-repo signals; your score should reflect that risk.
+- The platform applies mandatory risk caps for severe aligned-repo signals;
+  your score should reflect that risk.
 """

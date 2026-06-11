@@ -33,8 +33,7 @@ def test_format_sandbox_reports_truncates_when_max_chars_set() -> None:
                 ],
             },
             "findings": [
-                {"severity": "high", "title": f"finding-{i}-" + ("x" * 80)}
-                for i in range(20)
+                {"severity": "high", "title": f"finding-{i}-" + ("x" * 80)} for i in range(20)
             ],
         }
     ]

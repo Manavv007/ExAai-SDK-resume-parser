@@ -42,9 +42,14 @@ def strip_noise_lines(content: str, path: str) -> str:
     for line in lines:
         if _BLANK_LINE.match(line):
             continue
-        if language in ("javascript", "typescript", "go", "java", "rust", "csharp") and _COMMENT_LINE.match(
-            line
-        ):
+        if language in (
+            "javascript",
+            "typescript",
+            "go",
+            "java",
+            "rust",
+            "csharp",
+        ) and _COMMENT_LINE.match(line):
             continue
         kept.append(line)
     return "\n".join(kept)
@@ -119,7 +124,9 @@ def extract_generic_skeleton(content: str) -> str:
             continue
         if stripped.startswith(("import ", "from ", "export ", "package ", "using ", "namespace ")):
             picked.append(line)
-        elif re.match(r"^(class |interface |enum |struct |func |function |def |async function )", stripped):
+        elif re.match(
+            r"^(class |interface |enum |struct |func |function |def |async function )", stripped
+        ):
             picked.append(line)
             picked.append("    ...")
         if len(picked) >= 80:

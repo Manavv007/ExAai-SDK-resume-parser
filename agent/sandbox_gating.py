@@ -229,11 +229,7 @@ async def _ensure_sandbox_reports_for_urls(
 
     await evaluate_urls([u for u in urls if u not in by_url], label="Evaluating")
     await evaluate_urls(
-        [
-            u
-            for u in urls
-            if by_url.get(u, {}).get("skipped_reason") == _DEFERRED_PENDING_REASON
-        ],
+        [u for u in urls if by_url.get(u, {}).get("skipped_reason") == _DEFERRED_PENDING_REASON],
         label="Finishing deferred",
     )
     await evaluate_urls(

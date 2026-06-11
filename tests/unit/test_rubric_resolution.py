@@ -94,7 +94,11 @@ def test_requirement_matches_need_rescore_detects_role_fit_placeholder() -> None
 
 def test_requirement_matches_need_rescore_detects_placeholder_requirement_rows() -> None:
     rubric = [
-        {"criterion": "Python fundamentals", "weight": "must_have", "requirement_type": "technical_skill"},
+        {
+            "criterion": "Python fundamentals",
+            "weight": "must_have",
+            "requirement_type": "technical_skill",
+        },
         {"criterion": "REST APIs", "weight": "must_have", "requirement_type": "technical_skill"},
     ]
     matches = [

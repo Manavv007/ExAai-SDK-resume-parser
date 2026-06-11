@@ -35,7 +35,9 @@ def collect_top_files(
         if isinstance(item, dict) and str(item.get("source") or "") == "agent"
     ]
     if not agent_focus:
-        agent_focus = spec.get("agent_focus_paths") if isinstance(spec.get("agent_focus_paths"), list) else []
+        agent_focus = (
+            spec.get("agent_focus_paths") if isinstance(spec.get("agent_focus_paths"), list) else []
+        )
 
     limit = int(spec.get("top_files_count") or max_files or 5)
     selected_paths = select_evaluation_paths(

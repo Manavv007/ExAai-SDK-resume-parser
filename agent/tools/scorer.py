@@ -10,11 +10,16 @@ from typing import Any
 from uuid import UUID
 
 from agent.config import get_settings
+from agent.sandbox_gating import sandbox_llm_scoring_active
 from agent.schema import SCHEMA_PATH
 from agent.security.profile_identity import (
     apply_identity_score_cap,
     format_enriched_content_for_scoring,
     merge_identity_red_flags,
+)
+from agent.tools.repo_scoring import (
+    build_evaluation_breakdown,
+    resolve_score_from_evaluation_breakdown,
 )
 from agent.tools.result_sanitizer import (
     coerce_score,
@@ -34,9 +39,7 @@ from agent.tools.rubric_builder import (
     enforce_must_have_score_cap,
     resolve_session_rubric,
 )
-from agent.sandbox_gating import sandbox_llm_scoring_active
 from agent.tools.sandbox_prompt import SANDBOX_LLM_SCORING_RULES, format_sandbox_reports_for_prompt
-from agent.tools.repo_scoring import build_evaluation_breakdown, resolve_score_from_evaluation_breakdown
 from agent.tools.sandbox_scoring import apply_sandbox_score_penalty
 from agent.tools.top_file_evaluation import merge_top_file_evaluation
 from agent.tools.validator import validate_result_detailed
@@ -208,7 +211,8 @@ Return ONLY valid JSON matching the response schema (no markdown).
 Rules:
 - One requirement_matches entry per rubric criterion below (same order).
 - match_score must be integers 0-100 on a 5-point scale (0, 5, 10, …, 100).
-- resume_similarity_score.score is computed from weighted match_scores; score each criterion carefully.
+- resume_similarity_score.score is computed from weighted match_scores;
+  score each criterion carefully.
 - evidence: max 200 characters, plain text, no newlines; never empty.
 - Do not include metadata, application_id, job_id, sources_crawled, or null fields.
 - Do not include source_quote unless you have a short quote.
@@ -353,7 +357,11 @@ def normalize_screening_result(
     else:
         score, sandbox_penalty = apply_sandbox_score_penalty(score, github_repo_analyses)
     score = quantize_score(score, step=score_step)
-    if sandbox_penalty > 0 and score != pre_sandbox_score and score_source != "evaluation_composite":
+    if (
+        sandbox_penalty > 0
+        and score != pre_sandbox_score
+        and score_source != "evaluation_composite"
+    ):
         sandbox_penalty = pre_sandbox_score - score
 
     reasoning = str(similarity.get("reasoning") or "").strip()

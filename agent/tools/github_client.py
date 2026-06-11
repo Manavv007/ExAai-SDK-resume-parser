@@ -116,8 +116,7 @@ class GitHubClient:
                 status_code=403,
                 request=mock_request,
                 content=(
-                    b'{"message": "GitHub API rate limit exceeded '
-                    b'(skipped by circuit breaker)"}'
+                    b'{"message": "GitHub API rate limit exceeded (skipped by circuit breaker)"}'
                 ),
             )
             raise httpx.HTTPStatusError(

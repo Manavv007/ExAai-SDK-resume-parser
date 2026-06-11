@@ -109,9 +109,7 @@ def analyze_python_code(repo_dir: Path) -> dict[str, Any]:
             analyzer.total_complexity_points / analyzer.total_functions, 2
         ),
         "avg_function_length": round(analyzer.total_function_lines / analyzer.total_functions, 2),
-        "type_annotation_ratio": round(
-            analyzer.annotated_functions / analyzer.total_functions, 2
-        ),
+        "type_annotation_ratio": round(analyzer.annotated_functions / analyzer.total_functions, 2),
         "error_handling_density": round(analyzer.error_handling_points / total_loc, 4)
         if total_loc
         else 0.0,

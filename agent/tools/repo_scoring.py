@@ -195,11 +195,7 @@ def compute_repo_portfolio_raw_score(
     documentation_score: int,
     collaborators_score: int,
 ) -> int:
-    raw = (
-        activity_score * 0.35
-        + documentation_score * 0.40
-        + collaborators_score * 0.25
-    )
+    raw = activity_score * 0.35 + documentation_score * 0.40 + collaborators_score * 0.25
     return int(round(_clamp(raw)))
 
 
@@ -270,9 +266,7 @@ def compute_code_quality_score(
         else {}
     )
     git_profile = (
-        repo_profile.get("git_profile")
-        if isinstance(repo_profile.get("git_profile"), dict)
-        else {}
+        repo_profile.get("git_profile") if isinstance(repo_profile.get("git_profile"), dict) else {}
     )
     files = top_files
     if files is None:

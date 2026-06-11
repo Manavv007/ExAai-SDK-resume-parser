@@ -70,9 +70,7 @@ def test_dotenv_overrides_stale_shell_gemini_key(
     assert os.environ.get("GOOGLE_API_KEY") == "from-dotenv-key"
 
 
-def test_jd_parse_use_llm_defaults_false(
-    monkeypatch: pytest.MonkeyPatch, tmp_path
-) -> None:
+def test_jd_parse_use_llm_defaults_false(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr("agent.config._ENV_FILE", tmp_path / "missing.env")
     monkeypatch.delenv("JD_PARSE_USE_LLM", raising=False)
@@ -122,9 +120,7 @@ def test_github_clone_analysis_enabled_coerces_true_false(
     assert get_settings().github_clone_analysis_enabled is False
 
 
-def test_sandbox_config_normalizes_literals(
-    monkeypatch: pytest.MonkeyPatch, tmp_path
-) -> None:
+def test_sandbox_config_normalizes_literals(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr("agent.config._ENV_FILE", tmp_path / "missing.env")
     monkeypatch.setenv("SANDBOX_PROVIDER", " CLOUD_RUN ")

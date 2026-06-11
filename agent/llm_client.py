@@ -350,9 +350,7 @@ def gemini_configured(settings: Settings | None = None) -> bool:
 
 def gemini_key_suffix(settings: Settings | None = None) -> str:
     """Last 4 chars of the active Gemini key (for health checks, not logging full secrets)."""
-    from agent.config import get_settings
-
-    from agent.config import resolve_vertex_gcp_project
+    from agent.config import get_settings, resolve_vertex_gcp_project
 
     resolved = settings or get_settings()
     if gemini_vertex_active(resolved):
@@ -364,9 +362,7 @@ def gemini_key_suffix(settings: Settings | None = None) -> str:
 
 def create_genai_client(settings: Settings | None = None) -> Any:
     """google-genai Client for AI Studio (API key) or Vertex AI (ADC)."""
-    from agent.config import get_settings
-
-    from agent.config import resolve_vertex_gcp_project
+    from agent.config import get_settings, resolve_vertex_gcp_project
 
     resolved = settings or get_settings()
     from google import genai

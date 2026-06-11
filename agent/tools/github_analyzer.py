@@ -412,9 +412,7 @@ async def _evaluate_sandbox_repos(
         results_by_url = dict(zip(repo_urls, gathered))
 
     timed_out_urls = [
-        url
-        for url in repo_urls
-        if results_by_url.get(url, {}).get("timed_out") is True
+        url for url in repo_urls if results_by_url.get(url, {}).get("timed_out") is True
     ]
     if timed_out_urls and _retry_pass < 1:
         logger.info("Retrying %s sandbox repo(s) that timed out on first pass", len(timed_out_urls))
@@ -886,23 +884,23 @@ async def _generate_coding_style_summary(
         f"software engineering practices.\n"
         f"Format your output as a JSON object matching this schema:\n"
         f"{{\n"
-        f"  \"coding_style_summary\": \"A concise (2-3 sentences) summary of their "
+        f'  "coding_style_summary": "A concise (2-3 sentences) summary of their '
         f"coding style, best practices (tests, CI/CD, documentation), framework usage, "
-        f"and structural design.\",\n"
-        f"  \"collaboration_style\": \"A concise (1-2 sentences) evaluation of their "
+        f'and structural design.",\n'
+        f'  "collaboration_style": "A concise (1-2 sentences) evaluation of their '
         f"collaboration style and open-source involvement based on the "
-        f"collaboration summary.\",\n"
-        f"  \"commit_hygiene\": \"A concise (1-2 sentences) evaluation of their commit "
+        f'collaboration summary.",\n'
+        f'  "commit_hygiene": "A concise (1-2 sentences) evaluation of their commit '
         f"message quality, formatting (e.g. conventional commits), descriptive clarity, "
-        f"and rigor based on their recent commit messages.\",\n"
-        f"  \"overall_github_signal\": \"strong\" | \"moderate\" | \"weak\" | \"none\"\n"
+        f'and rigor based on their recent commit messages.",\n'
+        f'  "overall_github_signal": "strong" | "moderate" | "weak" | "none"\n'
         f"}}\n\n"
         f"Ensure overall_github_signal corresponds to:\n"
-        f"- \"strong\": Active development, clean structure, tests, CI/CD, documentation, "
+        f'- "strong": Active development, clean structure, tests, CI/CD, documentation, '
         f"complex logic.\n"
-        f"- \"moderate\": Good code samples but may lack testing, CI/CD, or recent activity.\n"
-        f"- \"weak\": Mostly simple scripts, forks without contributions, or low code quality.\n"
-        f"- \"none\": No code samples or repositories available.\n\n"
+        f'- "moderate": Good code samples but may lack testing, CI/CD, or recent activity.\n'
+        f'- "weak": Mostly simple scripts, forks without contributions, or low code quality.\n'
+        f'- "none": No code samples or repositories available.\n\n'
         f"JSON Response:"
     )
 
@@ -1487,9 +1485,7 @@ async def analyze_github_repos(
                 word in str(jd_structured.get("job_title") or "").lower()
                 for word in ["senior", "lead", "staff", "principal", "architect", "sr."]
             ):
-                logger.info(
-                    "Hybrid Sandbox: Enabled because screening is for a senior/lead role."
-                )
+                logger.info("Hybrid Sandbox: Enabled because screening is for a senior/lead role.")
                 run_sandbox = True
             else:
                 _, static_signal, _, _ = _generate_coding_style_summary_heuristic(
@@ -1552,9 +1548,7 @@ async def analyze_github_repos(
             resume_github_repo_urls=resume_repo_urls,
             selected_sandbox_repo_urls=selected_sandbox_urls if run_sandbox else [],
             sandbox_reports=sandbox_reports,
-            repo_selection_mode=(
-                sandbox_selection_mode if run_sandbox else selection_mode
-            ),
+            repo_selection_mode=(sandbox_selection_mode if run_sandbox else selection_mode),
             candidate_tags=candidate_tags,
             github_metadata=github_metadata,
         )

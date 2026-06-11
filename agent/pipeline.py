@@ -47,6 +47,7 @@ from agent.tools.scorer import (
 )
 from agent.tools.validator import validate_result_detailed
 
+
 def _screening_agent_tools() -> list[Any]:
     tools: list[Any] = [
         fetch_profiles,

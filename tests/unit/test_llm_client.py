@@ -30,7 +30,8 @@ from agent.llm_client import (
 
 
 def test_resolve_llm_provider_auto_prefers_groq_when_key_set(
-    monkeypatch: pytest.MonkeyPatch, tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
 ) -> None:
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("LLM_PROVIDER", "auto")
@@ -46,7 +47,8 @@ def test_resolve_llm_provider_auto_prefers_groq_when_key_set(
 
 
 def test_resolve_llm_provider_auto_prefers_openrouter_when_only_openrouter_key_set(
-    monkeypatch: pytest.MonkeyPatch, tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
 ) -> None:
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("LLM_PROVIDER", "auto")
@@ -311,7 +313,8 @@ def test_generate_json_falls_back_to_openrouter_when_groq_rate_limited(
 
 
 def test_create_adk_model_groq_uses_litellm(
-    monkeypatch: pytest.MonkeyPatch, tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
 ) -> None:
     pytest.importorskip("litellm")
     monkeypatch.chdir(tmp_path)

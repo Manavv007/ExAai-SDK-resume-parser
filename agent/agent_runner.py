@@ -28,11 +28,11 @@ from agent.sandbox_gating import (
     sandbox_overlap_active,
     sandbox_required_for_state,
 )
-from agent.tools.sandbox_prompt import SANDBOX_LLM_SCORING_RULES, format_sandbox_reports_for_prompt
 from agent.tools.rubric_builder import (
     requirement_matches_need_rescore,
     resolve_session_rubric,
 )
+from agent.tools.sandbox_prompt import SANDBOX_LLM_SCORING_RULES, format_sandbox_reports_for_prompt
 from agent.tools.scorer import (
     _compact_rubric_for_prompt,
     attach_temp_sandbox_reports,
@@ -59,9 +59,11 @@ Workflow (agent-orchestrated evidence):
    automatic README/manifest padding. Judge aligned repos strictly: empty/stub/TODO content in
    expected files is a negative signal.
    Do not penalize orthogonal repos for missing role-specific depth.
-4. Turn 3 — submit_screening_result after reading sandbox digest (risk_tier, vulns, secrets, excerpts).
+4. Turn 3 — submit_screening_result after reading sandbox digest
+   (risk_tier, vulns, secrets, excerpts).
    Do NOT lower scores only because repos lack tests or CI.
-   Penalize aligned-repo material risk: CRITICAL/SEVERE risk_tier means resume_similarity_score should
+   Penalize aligned-repo material risk: CRITICAL/SEVERE risk_tier means
+   resume_similarity_score should
    be roughly 60-65 even if the resume reads well — one risky aligned repo should not zero out an
    otherwise strong profile. Weak secret hygiene plus dozens of CVEs is still a notable negative.
    Orthogonal coursework repos do not offset aligned-repo risk.
@@ -112,7 +114,8 @@ def _build_agent_continuation_message(session_state: dict[str, Any]) -> str:
     has_structures = bool(session_state.get("github_repo_structures"))
     has_sandbox = _has_sandbox_reports(session_state)
     steps: list[str] = [
-        "CONTINUATION REQUIRED — your next response MUST be a submit_screening_result tool call only.",
+        "CONTINUATION REQUIRED — your next response MUST be a submit_screening_result "
+        "tool call only.",
         "Do not reply with plain text or summaries.",
     ]
     if repo_urls and not has_structures:
@@ -378,9 +381,11 @@ def build_agent_user_message(state: dict[str, Any]) -> str:
         elif agent_evidence_orchestration_active() and not sandbox_reports:
             github_block += (
                 "\nAGENT EVIDENCE WORKFLOW (required):\n"
-                "1) get_github_repo_structures  2) run_sandbox_analysis per repo with classification "
+                "1) get_github_repo_structures  2) run_sandbox_analysis per repo "
+                "with classification "
                 "copied from structures and 1-5 JD-aligned focus_paths  "
-                "3) submit_screening_result with top_file_evaluation for each sandbox top_files path\n"
+                "3) submit_screening_result with top_file_evaluation for each sandbox "
+                "top_files path\n"
             )
         if sandbox_reports and sandbox_llm_scoring_active():
             github_block += f"\n{SANDBOX_LLM_SCORING_RULES}\n"
@@ -512,10 +517,7 @@ async def run_screening_agent_async(
         except Exception as exc:
             logger.warning("Profile URL pre-enrichment failed: %s", exc)
     register_prep_state(state)
-    if (
-        sandbox_llm_scoring_active(settings)
-        and sandbox_required_for_state(state, settings)
-    ):
+    if sandbox_llm_scoring_active(settings) and sandbox_required_for_state(state, settings):
         await await_sandbox_for_scoring(state)
         register_prep_state(state)
     max_turns = effective_max_agent_turns(settings)
@@ -578,7 +580,10 @@ async def run_screening_agent_async(
             if continuation_idx >= max_continuations:
                 break
 
-            _log_agent_workflow_state(session_state_dict, label=f"pre-continuation-{continuation_idx + 1}")
+            _log_agent_workflow_state(
+                session_state_dict,
+                label=f"pre-continuation-{continuation_idx + 1}",
+            )
             continuation_text = _build_agent_continuation_message(session_state_dict)
             logger.warning(
                 "Agent stopped without submit (continuation %s/%s); nudging",
@@ -613,9 +618,7 @@ async def run_screening_agent_async(
                         user_message=types.Content(
                             role="user",
                             parts=[
-                                types.Part(
-                                    text=_build_heuristic_fallback_submit_message(state)
-                                )
+                                types.Part(text=_build_heuristic_fallback_submit_message(state))
                             ],
                         ),
                         run_config=run_config,
@@ -627,8 +630,7 @@ async def run_screening_agent_async(
             job_id=job_id,
             code="AGENT_TIMEOUT",
             message=(
-                f"Agent run exceeded {agent_timeout_seconds}s without "
-                "submitting screening_result."
+                f"Agent run exceeded {agent_timeout_seconds}s without submitting screening_result."
             ),
             resume_text=resume_text,
             processing_time_ms=processing_time_ms,
@@ -637,9 +639,7 @@ async def run_screening_agent_async(
         logger.exception("Agent run failed")
         code, message = classify_llm_error(exc)
         if code == "LLM_RATE_LIMIT" and _litellm_fallback_providers(settings):
-            logger.warning(
-                "Agent hit LLM rate limit; attempting pipeline score fallback"
-            )
+            logger.warning("Agent hit LLM rate limit; attempting pipeline score fallback")
             fallback = await _attempt_pipeline_score_fallback(
                 state,
                 {},

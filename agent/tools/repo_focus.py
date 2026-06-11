@@ -39,6 +39,7 @@ def build_risk_only_focus_spec(
         "pick_mode": "risk_only",
     }
 
+
 MANIFEST_BASENAMES = frozenset(
     {
         "package.json",
@@ -155,11 +156,7 @@ def classify_content_quality(content: str) -> ContentStatus:
     if not lines:
         return "empty"
 
-    non_comment = [
-        line
-        for line in lines
-        if not line.startswith(("#", "//", "/*", "*", "--"))
-    ]
+    non_comment = [line for line in lines if not line.startswith(("#", "//", "/*", "*", "--"))]
     if not non_comment:
         return "vague"
 
@@ -188,9 +185,7 @@ def build_mandatory_focus_paths(file_paths: list[str]) -> list[dict[str, Any]]:
     def add(path: str, *, max_lines: int = 80) -> None:
         normalized = path.replace("\\", "/")
         if normalized in path_set and not any(item["path"] == normalized for item in selected):
-            selected.append(
-                {"path": normalized, "max_lines": max_lines, "source": "mandatory"}
-            )
+            selected.append({"path": normalized, "max_lines": max_lines, "source": "mandatory"})
 
     readme = next((path for path in paths if path.lower().endswith("readme.md")), None)
     if readme:
@@ -224,7 +219,9 @@ def resolve_focus_path(requested: str, file_paths: list[str]) -> tuple[str | Non
         return normalized, False
 
     basename = normalized.rsplit("/", 1)[-1]
-    basename_matches = [path for path in file_paths if path.endswith("/" + basename) or path == basename]
+    basename_matches = [
+        path for path in file_paths if path.endswith("/" + basename) or path == basename
+    ]
     if basename_matches:
         return sorted(basename_matches, key=len)[0].replace("\\", "/"), True
 
@@ -303,8 +300,7 @@ def validate_orchestrated_sandbox_repo_spec(
         )
     elif cls not in REPO_CLASSIFICATIONS:
         errors.append(
-            f"{repo_url}: classification must be one of: "
-            + ", ".join(sorted(REPO_CLASSIFICATIONS))
+            f"{repo_url}: classification must be one of: " + ", ".join(sorted(REPO_CLASSIFICATIONS))
         )
 
     expected = str(structure_classification or "").strip().lower()
@@ -424,7 +420,9 @@ def merge_repo_focus_spec(
     merged: list[dict[str, Any]] = []
     seen: set[str] = set()
 
-    def add_item(path: str, *, max_lines: int, source: str, requested_path: str | None = None) -> None:
+    def add_item(
+        path: str, *, max_lines: int, source: str, requested_path: str | None = None
+    ) -> None:
         if path in seen or len(merged) >= cap:
             return
         seen.add(path)
@@ -441,7 +439,9 @@ def merge_repo_focus_spec(
         add_item(item["path"], max_lines=item["max_lines"], source="mandatory")
 
     if repo_role != "orthogonal":
-        for path in rank_paths_for_profile(file_paths, candidate_tags=candidate_tags, repo_role=repo_role):
+        for path in rank_paths_for_profile(
+            file_paths, candidate_tags=candidate_tags, repo_role=repo_role
+        ):
             add_item(path, max_lines=100, source="heuristic")
             if len(merged) >= cap:
                 break
@@ -520,11 +520,7 @@ def build_repo_structure_summary(
         file_paths=file_paths,
     )
     top_dirs = sorted(
-        {
-            path.split("/", 1)[0]
-            for path in file_paths
-            if "/" in path and not path.startswith(".")
-        }
+        {path.split("/", 1)[0] for path in file_paths if "/" in path and not path.startswith(".")}
     )[:20]
     code_paths = [
         path
@@ -555,7 +551,9 @@ def _css_html_ratio(paths: list[str]) -> float:
     code_paths = [
         path
         for path in paths
-        if path.lower().endswith((".py", ".java", ".go", ".ts", ".js", ".rs", ".cs", ".html", ".css"))
+        if path.lower().endswith(
+            (".py", ".java", ".go", ".ts", ".js", ".rs", ".cs", ".html", ".css")
+        )
     ]
     if not code_paths:
         return 0.0

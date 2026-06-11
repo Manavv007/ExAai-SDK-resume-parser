@@ -327,9 +327,7 @@ def _build_findings(
                 "category": "tests",
                 "title": "Repository does not expose an obvious automated test suite.",
                 "evidence": "No common test paths were detected.",
-                "impact": (
-                    "Reduces confidence in correctness for this role-aligned repository."
-                ),
+                "impact": ("Reduces confidence in correctness for this role-aligned repository."),
             }
         )
     if has_ci:
@@ -413,8 +411,7 @@ def _build_findings(
                     f"has_env_file={security_profile['has_env_file']}"
                 ),
                 "impact": (
-                    "Committed secrets or unsafe env handling are strong "
-                    "professionalism concerns."
+                    "Committed secrets or unsafe env handling are strong professionalism concerns."
                 ),
             }
         )
@@ -517,8 +514,7 @@ def _build_findings(
                 "title": "Python docstring coverage scan was available.",
                 "evidence": f"docstring_coverage={interrogate_summary['docstring_coverage']}",
                 "impact": (
-                    "Documentation coverage is a useful maintainability signal "
-                    "for Python repos."
+                    "Documentation coverage is a useful maintainability signal for Python repos."
                 ),
             }
         )
@@ -545,20 +541,12 @@ def _summarize_pip_audit(data: dict[str, Any] | list[Any] | None) -> dict[str, A
     if data is None:
         return {"vulnerability_count": None}
     if isinstance(data, list):
-        count = sum(
-            len(item.get("vulns") or [])
-            for item in data
-            if isinstance(item, dict)
-        )
+        count = sum(len(item.get("vulns") or []) for item in data if isinstance(item, dict))
         return {"vulnerability_count": count}
     if isinstance(data, dict):
         vulns = data.get("dependencies")
         if isinstance(vulns, list):
-            count = sum(
-                len(item.get("vulns") or [])
-                for item in vulns
-                if isinstance(item, dict)
-            )
+            count = sum(len(item.get("vulns") or []) for item in vulns if isinstance(item, dict))
             return {"vulnerability_count": count}
     return {"vulnerability_count": 0}
 
@@ -596,9 +584,7 @@ def _summarize_checkov(data: dict[str, Any] | None) -> dict[str, Any]:
     if not isinstance(data, dict):
         return {"failed_checks": None}
     failed = (
-        data.get("summary", {}).get("failed")
-        if isinstance(data.get("summary"), dict)
-        else None
+        data.get("summary", {}).get("failed") if isinstance(data.get("summary"), dict) else None
     )
     return {"failed_checks": failed if isinstance(failed, int) else 0}
 

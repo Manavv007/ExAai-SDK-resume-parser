@@ -78,8 +78,7 @@ def build_security_profile(repo_dir: Path, secret_hits: int) -> dict[str, Any]:
     env_example = repo_dir / ".env.example"
     gitignore = read_text_if_exists(repo_dir / ".gitignore")
     covers_env = any(
-        entry in gitignore
-        for entry in (".env", ".env.*", "*.pem", "*.key", "secrets.json")
+        entry in gitignore for entry in (".env", ".env.*", "*.pem", "*.key", "secrets.json")
     )
     has_env_file = bool(env_files)
     return {
@@ -90,6 +89,8 @@ def build_security_profile(repo_dir: Path, secret_hits: int) -> dict[str, Any]:
         "secret_hygiene": (
             "weak"
             if secret_hits > 0 or has_env_file
-            else "good" if env_example.exists() and covers_env else "mixed"
+            else "good"
+            if env_example.exists() and covers_env
+            else "mixed"
         ),
     }

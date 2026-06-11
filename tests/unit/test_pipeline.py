@@ -7,10 +7,10 @@ import pytest
 from agent.agent_runner import SCREENING_AGENT_INSTRUCTION
 from agent.config import get_settings
 from agent.pipeline import (
-    screening_agent_tools,
     create_screening_agent,
     get_root_agent,
     score_with_validation,
+    screening_agent_tools,
 )
 
 FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"

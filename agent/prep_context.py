@@ -64,7 +64,8 @@ def merge_github_repo_analyses(
     )
     session_reports = (
         session_github.get("sandbox_reports")
-        if isinstance(session_github, dict) and isinstance(session_github.get("sandbox_reports"), list)
+        if isinstance(session_github, dict)
+        and isinstance(session_github.get("sandbox_reports"), list)
         else []
     )
     if len(session_reports) >= len(prep_reports) and session_reports:

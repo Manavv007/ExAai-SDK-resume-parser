@@ -220,7 +220,9 @@ def collect_focused_sample_files(
     return _collect_largest_sample_files(repo_dir, max_files=max_files)
 
 
-def _collect_largest_sample_files(repo_dir: Path, *, max_files: int = MAX_SAMPLE_FILES) -> list[dict[str, Any]]:
+def _collect_largest_sample_files(
+    repo_dir: Path, *, max_files: int = MAX_SAMPLE_FILES
+) -> list[dict[str, Any]]:
     files = collect_source_files(repo_dir)
     if not files:
         return []
@@ -359,9 +361,7 @@ def detect_framework_markers(repo_dir: Path, package_data: dict[str, Any]) -> li
 
 def infer_project_shape(repo_dir: Path, package_data: dict[str, Any], stack: list[str]) -> str:
     top_dirs = (
-        [path.name for path in repo_dir.iterdir() if path.is_dir()]
-        if repo_dir.exists()
-        else []
+        [path.name for path in repo_dir.iterdir() if path.is_dir()] if repo_dir.exists() else []
     )
     markers = detect_framework_markers(repo_dir, package_data)
     if {"packages", "apps"} & set(top_dirs):
@@ -420,11 +420,7 @@ def infer_repo_type_tags(
     tags: set[str] = set()
     if project_shape == "monorepo":
         tags.add("monorepo")
-    if (
-        "react" in framework_markers
-        or "nextjs" in framework_markers
-        or "vite" in framework_markers
-    ):
+    if "react" in framework_markers or "nextjs" in framework_markers or "vite" in framework_markers:
         tags.add("frontend_app")
     if (
         "fastapi" in framework_markers
