@@ -9,7 +9,7 @@ from api.middleware import ApiKeyMiddleware, RequestIdMiddleware, TimingMiddlewa
 from api.routes import router as screening_router
 
 settings = get_settings()
-configure_logging(settings.log_level)
+configure_logging(settings.log_level, log_format=settings.log_format)
 
 app = FastAPI(
     title="EXAai-ADK",

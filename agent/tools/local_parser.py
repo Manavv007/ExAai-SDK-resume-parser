@@ -330,14 +330,24 @@ def extract_jd_title(jd_text: str) -> str | None:
 
 def parse_jd_local(jd_text: str) -> JdStructured:
     """Full local JD structuring with typed requirements."""
+    from agent.tools.portfolio_signal import infer_role_category
+
     normalized = normalize_extracted_text(jd_text)
     must, nice = extract_jd_requirements(normalized)
     domain = detect_jd_domain(normalized)
+    title = extract_jd_title(normalized)
     return JdStructured(
-        job_title=extract_jd_title(normalized),
+        job_title=title,
         domain=domain,
         industry=detect_jd_industry(normalized),
         seniority=detect_jd_seniority(normalized),
+        role_category=infer_role_category(
+            job_title=title,
+            domain=domain,
+            jd_text=normalized,
+            must_have=must,
+            nice_to_have=nice,
+        ),
         must_have=must,
         nice_to_have=nice,
         requirements=_requirements_with_types(must, nice, domain),

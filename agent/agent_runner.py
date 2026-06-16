@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from typing import Any
 
 from google.adk.agents.run_config import RunConfig
@@ -19,6 +20,7 @@ from agent.llm_client import (
     effective_max_agent_turns,
     get_llm_call_count,
 )
+from agent.logging_config import trace_event
 from agent.prep_context import merge_with_prep_state, register_prep_state
 from agent.sandbox_gating import (
     agent_evidence_orchestration_active,
@@ -468,6 +470,15 @@ async def _consume_agent_run(
     run_config: RunConfig,
     timeout_seconds: int,
 ) -> None:
+    started = time.perf_counter()
+    trace_event(
+        logger,
+        "agent_turn_start",
+        user_id=user_id,
+        session_id=session_id,
+        timeout_seconds=timeout_seconds,
+        max_llm_calls=getattr(run_config, "max_llm_calls", None),
+    )
     async with asyncio.timeout(timeout_seconds):
 
         async def _run() -> None:
@@ -480,6 +491,13 @@ async def _consume_agent_run(
                 pass
 
         await _run()
+    trace_event(
+        logger,
+        "agent_turn_end",
+        user_id=user_id,
+        session_id=session_id,
+        duration_ms=int((time.perf_counter() - started) * 1000),
+    )
 
 
 async def run_screening_agent_async(
@@ -494,6 +512,15 @@ async def run_screening_agent_async(
     via Exa when ``AUTO_ENRICH_PROFILES`` is enabled (default).
     """
     register_prep_state(state)
+    run_started = time.perf_counter()
+    trace_event(
+        logger,
+        "screening_agent_start",
+        application_id=state.get("application_id"),
+        job_id=state.get("job_id"),
+        request_id=state.get("request_id"),
+        screening_mode=get_settings().screening_mode,
+    )
     settings = get_settings()
     from agent.enrichment import enrich_profile_urls_async
     from agent.sandbox_gating import run_sandbox_pre_run_for_orchestration
@@ -536,6 +563,13 @@ async def run_screening_agent_async(
         state,
         user_id=user_id,
         session_id=session_id,
+    )
+    trace_event(
+        logger,
+        "agent_session_seeded",
+        user_id=user_id,
+        session_id=session_id,
+        max_turns=max_turns,
     )
 
     user_message = types.Content(
@@ -590,6 +624,12 @@ async def run_screening_agent_async(
                 continuation_idx + 1,
                 max_continuations,
             )
+            trace_event(
+                logger,
+                "agent_continuation_nudge",
+                continuation=continuation_idx + 1,
+                max_continuations=max_continuations,
+            )
             next_message = types.Content(
                 role="user",
                 parts=[types.Part(text=continuation_text)],
@@ -625,6 +665,12 @@ async def run_screening_agent_async(
                         timeout_seconds=agent_timeout_seconds,
                     )
     except TimeoutError:
+        trace_event(
+            logger,
+            "screening_agent_timeout",
+            timeout_seconds=agent_timeout_seconds,
+            duration_ms=int((time.perf_counter() - run_started) * 1000),
+        )
         return build_failed_result(
             application_id=application_id,
             job_id=job_id,
@@ -637,6 +683,13 @@ async def run_screening_agent_async(
         )
     except Exception as exc:
         logger.exception("Agent run failed")
+        trace_event(
+            logger,
+            "screening_agent_exception",
+            error_type=type(exc).__name__,
+            error=str(exc),
+            duration_ms=int((time.perf_counter() - run_started) * 1000),
+        )
         code, message = classify_llm_error(exc)
         if code == "LLM_RATE_LIMIT" and _litellm_fallback_providers(settings):
             logger.warning("Agent hit LLM rate limit; attempting pipeline score fallback")
@@ -700,6 +753,12 @@ async def run_screening_agent_async(
             resume_text=resume_text,
             processing_time_ms=processing_time_ms,
         )
+    trace_event(
+        logger,
+        "screening_agent_submit_received",
+        llm_calls=get_llm_call_count(),
+        duration_ms=int((time.perf_counter() - run_started) * 1000),
+    )
 
     from agent.prep_context import session_state_to_dict
 
@@ -741,6 +800,13 @@ async def run_screening_agent_async(
         if processing_time_ms is not None:
             metadata["processing_time_ms"] = processing_time_ms
         screening_result["metadata"] = attach_llm_usage_metadata(metadata)
+
+    trace_event(
+        logger,
+        "screening_agent_completed",
+        llm_calls=get_llm_call_count(),
+        duration_ms=int((time.perf_counter() - run_started) * 1000),
+    )
 
     return attach_temp_sandbox_reports(
         screening_result,

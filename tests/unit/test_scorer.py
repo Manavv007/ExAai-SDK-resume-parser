@@ -43,7 +43,12 @@ def test_score_screening_success(mock_generate, test_settings) -> None:
         job_id=fixture["job_id"],
         resume_text="Backend engineer with Python and PostgreSQL.",
         jd_raw=jd,
-        jd_structured={"domain": "technical", "must_have": ["Python"], "nice_to_have": []},
+        jd_structured={
+            "domain": "technical",
+            "role_category": "non_portfolio",
+            "must_have": ["Python"],
+            "nice_to_have": [],
+        },
         rubric=bundle["rubric"],
         rubric_preamble=bundle["rubric_preamble"],
         enriched_contents=[
@@ -66,6 +71,36 @@ def test_score_screening_success(mock_generate, test_settings) -> None:
 
 
 @patch("agent.tools.scorer._generate_json")
+def test_score_screening_applies_portfolio_penalty(mock_generate, test_settings) -> None:
+    fixture = json.loads((FIXTURES / "valid_result_completed.json").read_text(encoding="utf-8"))
+    fixture["resume_similarity_score"] = {"score": 92, "reasoning": "Strong resume claims."}
+    mock_generate.return_value = fixture
+
+    result = score_screening(
+        application_id=fixture["application_id"],
+        job_id=fixture["job_id"],
+        resume_text="Senior backend engineer with Python.",
+        jd_raw="Senior Software Engineer role requiring Python.",
+        jd_structured={
+            "job_title": "Senior Software Engineer",
+            "domain": "technical",
+            "role_category": "software_engineering",
+            "must_have": ["Python"],
+            "nice_to_have": [],
+        },
+        enriched_contents=[],
+        resume_structured={"experience_years": 10},
+    )
+
+    assert result["resume_screening_status"] == "completed"
+    assert result["resume_similarity_score"]["score"] <= 75
+    assert any(
+        flag.get("flag") == "missing_portfolio_verification"
+        for flag in result.get("red_flags") or []
+    )
+
+
+@patch("agent.tools.scorer._generate_json")
 def test_score_screening_retries_on_invalid_json(mock_generate, test_settings) -> None:
     fixture = json.loads((FIXTURES / "valid_result_completed.json").read_text(encoding="utf-8"))
     mock_generate.side_effect = [ValueError("bad"), fixture]
@@ -75,7 +110,12 @@ def test_score_screening_retries_on_invalid_json(mock_generate, test_settings) -
         job_id=fixture["job_id"],
         resume_text="Engineer with Python.",
         jd_raw="Need Python",
-        jd_structured={"domain": "technical", "must_have": ["Python"], "nice_to_have": []},
+        jd_structured={
+            "domain": "technical",
+            "role_category": "non_portfolio",
+            "must_have": ["Python"],
+            "nice_to_have": [],
+        },
     )
 
     assert mock_generate.call_count == 2
@@ -365,7 +405,12 @@ def test_score_screening_no_processing_time_ms_validates(mock_generate, test_set
         job_id=fixture["job_id"],
         resume_text="Backend engineer with Python and PostgreSQL.",
         jd_raw="Senior Python engineer needed.",
-        jd_structured={"domain": "technical", "must_have": ["Python"], "nice_to_have": []},
+        jd_structured={
+            "domain": "technical",
+            "role_category": "non_portfolio",
+            "must_have": ["Python"],
+            "nice_to_have": [],
+        },
         processing_time_ms=None,
     )
 

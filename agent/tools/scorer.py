@@ -17,6 +17,14 @@ from agent.security.profile_identity import (
     format_enriched_content_for_scoring,
     merge_identity_red_flags,
 )
+from agent.tools.portfolio_signal import (
+    apply_portfolio_penalties,
+    build_portfolio_prompt_section,
+    build_portfolio_red_flags,
+    evaluate_portfolio_signal,
+    resolve_experience_years,
+    resolve_role_category,
+)
 from agent.tools.repo_scoring import (
     build_evaluation_breakdown,
     resolve_score_from_evaluation_breakdown,
@@ -126,6 +134,47 @@ def _compact_rubric_for_prompt(rubric: list[dict[str, Any]]) -> list[dict[str, A
     return compact[:_MAX_PROMPT_RUBRIC_ITEMS]
 
 
+def _build_portfolio_signal(
+    *,
+    jd_structured: dict[str, Any] | Any | None,
+    resume_structured: dict[str, Any] | Any | None,
+    profile_urls: list[str] | None,
+    enriched_contents: list[dict[str, Any]] | None,
+) -> dict[str, Any]:
+    try:
+        urls = list(profile_urls or [])
+        if not urls and enriched_contents:
+            urls = [
+                str(item.get("url"))
+                for item in enriched_contents
+                if isinstance(item, dict) and item.get("url")
+            ]
+        return evaluate_portfolio_signal(
+            role_category=resolve_role_category(jd_structured),
+            profile_urls=urls,
+            enriched_contents=enriched_contents or [],
+            experience_years=resolve_experience_years(resume_structured),
+        )
+    except Exception as exc:
+        import logging
+
+        logging.getLogger("exaai_adk.portfolio_signal").warning(
+            "Portfolio signal evaluation failed; skipping penalties: %s",
+            exc,
+        )
+        return {
+            "role_category": resolve_role_category(jd_structured),
+            "required_platforms_found": [],
+            "required_platforms_missing": [],
+            "penalty_points": 0,
+            "penalty_applied": False,
+            "penalty_reason": None,
+            "signal_strength": "not_applicable",
+            "crawl_status_log": {},
+            "personal_portfolio_url": None,
+        }
+
+
 def _generate_json(prompt: str, *, correction: str | None = None) -> dict[str, Any]:
     """Call configured LLM provider with JSON response mode."""
     from agent.llm_client import generate_json
@@ -144,6 +193,7 @@ def _build_scoring_prompt(
     enriched_contents: list[dict[str, Any]],
     github_repo_analyses: dict[str, Any] | None = None,
     compact_sandbox_prompt: bool = False,
+    portfolio_prompt_section: str = "",
 ) -> str:
     external_blocks = "\n\n".join(
         format_enriched_content_for_scoring(
@@ -206,6 +256,7 @@ def _build_scoring_prompt(
     prompt = f"""You are an expert resume screening judge for hiring teams.
 
 {rubric_preamble}
+{portfolio_prompt_section}
 
 Return ONLY valid JSON matching the response schema (no markdown).
 Rules:
@@ -300,6 +351,8 @@ def normalize_screening_result(
     github_repo_analyses: dict[str, Any] | None = None,
     profile_urls: list[str] | None = None,
     profile_url_meta: list[dict[str, Any]] | None = None,
+    jd_structured: dict[str, Any] | Any | None = None,
+    resume_structured: dict[str, Any] | Any | None = None,
 ) -> dict[str, Any]:
     """Map model output onto the platform contract and apply score caps."""
     settings = get_settings()
@@ -356,6 +409,21 @@ def normalize_screening_result(
         sandbox_penalty = int(evaluation_breakdown.get("sandbox_penalty") or 0)
     else:
         score, sandbox_penalty = apply_sandbox_score_penalty(score, github_repo_analyses)
+
+    portfolio_signal = _build_portfolio_signal(
+        jd_structured=jd_structured,
+        resume_structured=resume_structured,
+        profile_urls=profile_urls,
+        enriched_contents=enriched_contents,
+    )
+    portfolio_penalty_applied = 0
+    portfolio_hard_cap_applied = False
+    if portfolio_signal.get("penalty_applied"):
+        score, portfolio_penalty_applied, portfolio_hard_cap_applied = apply_portfolio_penalties(
+            score,
+            portfolio_signal,
+        )
+
     score = quantize_score(score, step=score_step)
     if (
         sandbox_penalty > 0
@@ -365,6 +433,19 @@ def normalize_screening_result(
         sandbox_penalty = pre_sandbox_score - score
 
     reasoning = str(similarity.get("reasoning") or "").strip()
+
+    def _append_reasoning_note(base: str, note: str, *, limit: int = 500) -> str:
+        base = (base or "").strip()
+        note = (note or "").strip()
+        if not note:
+            return base[:limit]
+        if not base:
+            return note[:limit]
+        # Preserve the note even when base is already near the limit.
+        available = max(0, limit - len(note))
+        trimmed = base[:available].rstrip()
+        return (trimmed + note).strip()[:limit]
+
     if sandbox_penalty > 0:
         from agent.tools.sandbox_scoring import compute_sandbox_score_ceiling
 
@@ -382,9 +463,21 @@ def normalize_screening_result(
             "due to engineering-risk signals (secrets, vulnerabilities, or high-severity findings)."
             f"{ceiling_note}"
         )
-        reasoning = (reasoning + penalty_note).strip()[:500]
-    else:
-        reasoning = reasoning[:500]
+        reasoning = _append_reasoning_note(reasoning, penalty_note, limit=500)
+    if portfolio_penalty_applied > 0:
+        cap_note = ""
+        if portfolio_hard_cap_applied:
+            cap_note = " Score capped at 75 for missing portfolio verification."
+        penalty_reason = str(
+            portfolio_signal.get("penalty_reason")
+            or "missing or unverifiable proof-of-work profiles"
+        ).strip()
+        portfolio_note = (
+            f" Portfolio verification reduced the score by {portfolio_penalty_applied} points "
+            f"due to {penalty_reason}.{cap_note}"
+        )
+        reasoning = _append_reasoning_note(reasoning, portfolio_note, limit=500)
+    reasoning = reasoning[:500]
     if isinstance(evaluation_breakdown, dict) and evaluation_breakdown.get("repos"):
         metrics_note = (
             f" Evaluation: JD fit {evaluation_breakdown.get('jd_fit_score')},"
@@ -392,7 +485,7 @@ def normalize_screening_result(
             f" code quality {evaluation_breakdown.get('code_quality_score')},"
             f" composite {evaluation_breakdown.get('composite_score')}."
         )
-        reasoning = (reasoning + metrics_note).strip()[:500]
+        reasoning = _append_reasoning_note(reasoning, metrics_note, limit=500)
     if not reasoning:
         reasoning = "No reasoning provided."
 
@@ -466,7 +559,8 @@ def normalize_screening_result(
             str(raw.get("recommendation_reasoning") or "").strip() or reasoning
         )[:2000],
         "red_flags": merge_identity_red_flags(
-            sanitize_red_flags(raw.get("red_flags")),
+            sanitize_red_flags(raw.get("red_flags"))
+            + build_portfolio_red_flags(portfolio_signal),
             identity_red_flags or [],
         ),
         "sources_crawled": sources,
@@ -479,7 +573,22 @@ def normalize_screening_result(
         breakdown_out = dict(evaluation_breakdown)
         breakdown_out["final_score_source"] = score_source
         breakdown_out["final_score"] = result["resume_similarity_score"]["score"]
+        breakdown_out["portfolio_signal"] = portfolio_signal
+        if portfolio_penalty_applied > 0:
+            breakdown_out["portfolio_penalty"] = portfolio_penalty_applied
         result["evaluation_breakdown"] = breakdown_out
+    elif portfolio_signal.get("penalty_applied") or portfolio_signal.get("signal_strength") not in (
+        None,
+        "not_applicable",
+    ):
+        result["evaluation_breakdown"] = {
+            "jd_fit_score": jd_fit_for_breakdown if jd_fit_for_breakdown > 0 else score,
+            "composite_score": result["resume_similarity_score"]["score"],
+            "portfolio_signal": portfolio_signal,
+            "portfolio_penalty": portfolio_penalty_applied,
+            "final_score": result["resume_similarity_score"]["score"],
+            "final_score_source": score_source,
+        }
     top_file_evaluation = merge_top_file_evaluation(
         raw.get("top_file_evaluation"),
         github_repo_analyses,
@@ -546,6 +655,7 @@ def score_screening(
     github_repo_analyses: dict[str, Any] | None = None,
     profile_urls: list[str] | None = None,
     profile_url_meta: list[dict[str, Any]] | None = None,
+    resume_structured: dict[str, Any] | Any | None = None,
     max_llm_attempts: int | None = None,
     compact_sandbox_prompt: bool = False,
 ) -> dict[str, Any]:
@@ -562,6 +672,12 @@ def score_screening(
     preamble = rubric_preamble or bundle["rubric_preamble"]
     enriched = enriched_contents or []
     rubric_models = build_rubric(jd_structured)
+    portfolio_signal = _build_portfolio_signal(
+        jd_structured=jd_structured,
+        resume_structured=resume_structured,
+        profile_urls=profile_urls,
+        enriched_contents=enriched,
+    )
 
     prompt = _build_scoring_prompt(
         application_id=application_id,
@@ -573,6 +689,7 @@ def score_screening(
         enriched_contents=enriched,
         github_repo_analyses=github_repo_analyses,
         compact_sandbox_prompt=compact_sandbox_prompt,
+        portfolio_prompt_section=build_portfolio_prompt_section(portfolio_signal),
     )
 
     last_error = "unknown"
@@ -594,6 +711,8 @@ def score_screening(
                 github_repo_analyses=github_repo_analyses,
                 profile_urls=profile_urls,
                 profile_url_meta=profile_url_meta,
+                jd_structured=jd_structured,
+                resume_structured=resume_structured,
             )
             outcome = validate_result_detailed(normalized)
             if outcome.ok:
@@ -648,6 +767,7 @@ def score_screening_from_state(
         github_repo_analyses=state.get("github_repo_analyses"),
         profile_urls=list(state.get("profile_urls") or []),
         profile_url_meta=list(state.get("profile_url_meta") or []),
+        resume_structured=state.get("resume_structured") or {},
         max_llm_attempts=max_llm_attempts,
         compact_sandbox_prompt=compact_sandbox_prompt,
     )

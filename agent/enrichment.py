@@ -7,10 +7,12 @@ instead of N separate round-trips.
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any
 
 from agent.cache.url_cache import UrlCache
 from agent.config import get_settings
+from agent.logging_config import trace_event
 from agent.security.allowlist import check_allowlist
 from agent.security.profile_identity import ProfileTrust
 from agent.security.ssrf_guard import validate_url
@@ -18,6 +20,7 @@ from agent.tools.crawler import fetch_url_text, fetch_url_text_batch
 from agent.tools.sanitizer import sanitize_external_content
 
 _cache: UrlCache | None = None
+logger = logging.getLogger("exaai_adk.enrichment")
 
 
 def get_url_cache() -> UrlCache:
@@ -73,13 +76,21 @@ def fetch_profile_url_data(
     Untrusted URLs are never fetched (Exa); pipeline adds prompt stubs via
     ``_stub_untrusted_profile_entry`` instead.
     """
+    trace_event(
+        logger,
+        "enrichment_url_start",
+        url=url,
+        allow_untrusted=allow_untrusted,
+    )
     settings = get_settings()
     allowed_urls = set(state.get("profile_urls") or [])
     if url not in allowed_urls:
+        trace_event(logger, "enrichment_url_rejected", url=url, reason="url_not_in_candidate_list")
         return {"ok": False, "url": url, "error": "url_not_in_candidate_list"}
 
     trust_by_url = state.get("profile_trust_by_url") or {}
     if not allow_untrusted and trust_by_url.get(url) == ProfileTrust.SCORING_UNTRUSTED.value:
+        trace_event(logger, "enrichment_url_rejected", url=url, reason="profile_untrusted")
         return {
             "ok": False,
             "url": url,
@@ -89,21 +100,32 @@ def fetch_profile_url_data(
 
     ssrf = validate_url(url)
     if not ssrf.allowed:
+        trace_event(logger, "enrichment_url_rejected", url=url, reason=ssrf.reason)
         return {"ok": False, "url": url, "error": ssrf.reason}
 
     allow = check_allowlist(url)
     if not allow.allowed:
+        trace_event(logger, "enrichment_url_rejected", url=url, reason=allow.reason)
         return {"ok": False, "url": url, "error": allow.reason}
 
     cache = get_url_cache()
     cached = cache.get(url)
     if cached is not None:
         raw = cached
+        trace_event(logger, "enrichment_cache_hit", url=url)
     else:
         try:
             raw = fetch_url_text(url)
             cache.set(url, raw)
+            trace_event(logger, "enrichment_fetch_success", url=url, raw_chars=len(raw))
         except Exception as exc:
+            trace_event(
+                logger,
+                "enrichment_fetch_error",
+                url=url,
+                reason="exa_fetch_failed",
+                error=str(exc),
+            )
             return {
                 "ok": False,
                 "url": url,
@@ -280,9 +302,16 @@ def _classify_and_check_url(
 ) -> dict[str, Any]:
     """Run SSRF + allowlist checks for a single URL. Returns a status dict."""
     if url not in allowed_urls:
+        trace_event(
+            logger,
+            "enrichment_batch_rejected",
+            url=url,
+            reason="url_not_in_candidate_list",
+        )
         return {"ok": False, "url": url, "error": "url_not_in_candidate_list"}
 
     if skip_untrusted and trust_by_url.get(url) == ProfileTrust.SCORING_UNTRUSTED.value:
+        trace_event(logger, "enrichment_batch_rejected", url=url, reason="profile_untrusted")
         return {
             "ok": False,
             "url": url,
@@ -292,12 +321,15 @@ def _classify_and_check_url(
 
     ssrf = validate_url(url)
     if not ssrf.allowed:
+        trace_event(logger, "enrichment_batch_rejected", url=url, reason=ssrf.reason)
         return {"ok": False, "url": url, "error": ssrf.reason}
 
     allow = check_allowlist(url)
     if not allow.allowed:
+        trace_event(logger, "enrichment_batch_rejected", url=url, reason=allow.reason)
         return {"ok": False, "url": url, "error": allow.reason}
 
+    trace_event(logger, "enrichment_batch_eligible", url=url, category=allow.domain_category)
     return {"ok": True, "url": url, "allow": allow}
 
 
@@ -393,12 +425,23 @@ async def fetch_profile_urls_batch_async(
     Security checks (SSRF, allowlist) still run per-URL before the batch
     fetch. Cached URLs are served from SQLite without any API call.
     """
+    trace_event(
+        logger,
+        "enrichment_batch_start",
+        requested_count=len(urls),
+    )
     eligible, skipped, truncated = plan_batch_profile_fetches(
         state,
         urls,
         skip_untrusted=True,
     )
     if not eligible:
+        trace_event(
+            logger,
+            "enrichment_batch_noop",
+            skipped_count=len(skipped),
+            truncated=truncated,
+        )
         return {
             "ok": True,
             "fetched": 0,
@@ -426,6 +469,14 @@ async def fetch_profile_urls_batch_async(
     state["enriched_contents"] = enriched
 
     fetched = sum(1 for item in results if item.get("ok"))
+    trace_event(
+        logger,
+        "enrichment_batch_end",
+        fetched=fetched,
+        eligible_count=len(eligible),
+        skipped_count=len(skipped),
+        truncated=truncated,
+    )
 
     return {
         "ok": True,
