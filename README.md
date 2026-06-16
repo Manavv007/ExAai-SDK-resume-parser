@@ -1,60 +1,62 @@
 # EXAai-ADK
 
-Standalone resume screening agent: parse resume and job description, enrich via Exa AI, score with Gemini, return JSON for the main hiring platform.
+**AI-powered resume screening service** — parse resumes and job descriptions, enrich candidate profiles with Exa, score with Gemini (or other LLM providers), and return structured JSON for your hiring platform.
 
-- **Plan:** [`implement.md`](./implement.md)
-- **Pipeline flowcharts:** [`flowchart.md`](./flowchart.md)
-- **ADK agent migration (phased):** [`docs/AGENT_MIGRATION.md`](./docs/AGENT_MIGRATION.md)
-- **Architecture (ADK + Exa):** [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md)
-- **Progress:** [`progress.md`](./progress.md)
-- **Platform contract:** [`json-schema.md`](./json-schema.md) · [`CONTRACTS.md`](./CONTRACTS.md)
+> This service runs **standalone** (not on GCP). Your main app (Supabase / Next.js) persists screening results.
 
-This service does **not** run on GCP. The main app (Supabase / Next.js) persists results.
+---
 
-## Requirements
+## Features
 
-- Python 3.12+
+| Capability | Description |
+|------------|-------------|
+| **Agent & pipeline modes** | ADK agent picks URLs via tools (`agent`) or legacy enrich-all-then-score (`pipeline`) |
+| **JD + resume parsing** | PDF/DOCX extraction, local heuristics, optional Gemini structuring |
+| **Profile enrichment** | Exa crawl with SSRF protection, allowlists, and trust scoring |
+| **Rubric scoring** | Must-have / nice-to-have alignment with deterministic score derivation |
+| **Portfolio verification** | Role-aware proof-of-work checks (GitHub, Kaggle, design portfolios, etc.) |
+| **GitHub + sandbox** | Repo analysis, secret/vuln scanning, optional Cloud Run sandbox |
+| **Structured output** | `resume-screening-result-v1` JSON contract with validation |
+
+---
+
+## Quick start
+
+### Requirements
+
+- Python **3.12+**
 - API keys: [Google AI Studio](https://aistudio.google.com/apikey) (Gemini), [Exa](https://dashboard.exa.ai) (crawl)
 
-## Setup
+### Install
 
 ```bash
-cd EXAai-ADK
+git clone https://github.com/Manavv007/ExAai-SDK-resume-parser.git
+cd ExAai-SDK-resume-parser
 python -m venv .venv
 
 # Windows
 .venv\Scripts\activate
 
 # macOS / Linux
-# source .venv/bin/activate
+source .venv/bin/activate
 
 pip install -e ".[dev]"
 python -m spacy download en_core_web_sm
-copy .env.example .env   # Windows
-# cp .env.example .env   # macOS / Linux
+copy .env.example .env   # Windows — use cp on macOS/Linux
 ```
 
-Edit `.env` and set at minimum `GEMINI_API_KEY`, `EXA_API_KEY`, and `API_KEYS`.
+Edit `.env` and set at minimum:
 
-**Two different keys (easy to mix up):**
+| Variable | Purpose |
+|----------|---------|
+| `GEMINI_API_KEY` | Server → Google Gemini (**do not** paste into Swagger) |
+| `EXA_API_KEY` | Exa crawl API |
+| `API_KEYS` | Clients → your `/screen` endpoint (Swagger **api_key** field) |
 
-| `.env` variable | Purpose |
-|-----------------|--------|
-| `GEMINI_API_KEY` | Server → Google Gemini (never paste into Swagger) |
-| `API_KEYS` | Clients → your `/screen` endpoint (paste into Swagger **api_key** field) |
-
-**Default:** `SCREENING_MODE=agent` — ADK Runner; the agent picks profile URLs via tools. Set `SCREENING_MODE=pipeline` for the legacy enrich-all-then-score path.
-
-**Fewer Gemini calls:** `JD_PARSE_USE_LLM=false` (default) uses local JD/resume parsing; `MAX_AGENT_TURNS=8` caps agent turns.
-
-**OpenRouter (optional):** set `OPEN_ROUTER_API_KEY` and `LLM_PROVIDER=openrouter` (or `auto`). Agent mode (`SCREENING_MODE=agent`) requires tool calling — use `OPENROUTER_AGENT_MODEL_ID=openai/gpt-oss-20b:free` (default). Pipeline scoring can use `OPENROUTER_MODEL_ID=openrouter/free`. Free tier caps agent turns at `OPENROUTER_FREE_MAX_AGENT_TURNS=3`.
-
-## Run locally
-
-Use the dev script (recommended). It reloads only `agent/` and `api/` (not `tests/`) and
-limits graceful shutdown so reload does not hang while a long `/screen` request is open:
+### Run
 
 ```powershell
+# Recommended — reloads agent/ + api/ only
 .\scripts\run_dev.ps1
 ```
 
@@ -62,14 +64,12 @@ limits graceful shutdown so reload does not hang while a long `/screen` request 
 ./scripts/run_dev.sh
 ```
 
-Manual equivalent:
+Manual:
 
 ```bash
-uvicorn api.main:app --reload --reload-dir agent --reload-dir api --timeout-graceful-shutdown 10 --host 0.0.0.0 --port 8080
+uvicorn api.main:app --reload --reload-dir agent --reload-dir api \
+  --timeout-graceful-shutdown 10 --host 0.0.0.0 --port 8080
 ```
-
-If reload still appears stuck, press **Ctrl+C** once (or twice to force quit). An in-flight
-screening run can hold the connection until it finishes or the graceful shutdown timeout elapses.
 
 Health check:
 
@@ -77,17 +77,38 @@ Health check:
 curl http://localhost:8080/health
 ```
 
+---
+
+## Screening flow
+
+```mermaid
+flowchart LR
+    A[Resume + JD] --> B[Parse & structure]
+    B --> C[Enrich profiles via Exa]
+    C --> D[GitHub / sandbox optional]
+    D --> E[LLM scoring + rubric]
+    E --> F[Portfolio guardrails]
+    F --> G[JSON result v1]
+```
+
+**Default mode:** `SCREENING_MODE=agent` — the ADK agent orchestrates URL selection and tool calls.  
+Set `SCREENING_MODE=pipeline` for the legacy single-pass enrich-then-score path.
+
+---
+
 ## Call `/screen`
 
-Multipart form request:
+`POST /screen` — multipart form:
 
 | Field | Required | Description |
-|-------|----------|-------------|
-| `application_id` | Yes | UUID from `job_applications` |
-| `job_id` | Yes | UUID from `jobs` |
-| `resume` | Yes | PDF or DOCX file (max 5 MB) |
-| `jd` | Yes | JD file (PDF/DOCX/txt) or use `jd_text` |
-| `jd_text` | No | Plain-text JD instead of file |
+|-------|:--------:|-------------|
+| `application_id` | ✓ | UUID from `job_applications` |
+| `job_id` | ✓ | UUID from `jobs` |
+| `resume` | ✓ | PDF or DOCX (max 5 MB) |
+| `jd` | * | JD file (PDF/DOCX/txt) |
+| `jd_text` | * | Plain-text JD instead of file |
+
+*Provide `jd` **or** `jd_text`.*
 
 ```bash
 curl -X POST http://localhost:8080/screen \
@@ -99,24 +120,64 @@ curl -X POST http://localhost:8080/screen \
   -F "jd_text=Senior software engineer with Python and distributed systems."
 ```
 
-Response shape: `resume-screening-result-v1` — see [`json-schema.md`](./json-schema.md). Migration phases: [`docs/AGENT_MIGRATION.md`](./docs/AGENT_MIGRATION.md).
+Response: `resume-screening-result-v1` — see [`json-schema.md`](./json-schema.md).
+
+---
+
+## Configuration highlights
+
+| Setting | Default | Notes |
+|---------|---------|-------|
+| `SCREENING_MODE` | `agent` | `agent` or `pipeline` |
+| `JD_PARSE_USE_LLM` | `false` | `false` saves one Gemini call per screen |
+| `MAX_AGENT_TURNS` | `8` | Caps ADK agent tool turns |
+| `LLM_PROVIDER` | `auto` | `gemini` · `groq` · `openrouter` · `auto` |
+| `GITHUB_CLONE_ANALYSIS_ENABLED` | `false` | Enable repo clone + sandbox analysis |
+| `AGENT_TRACE_ENABLED` | `false` | Structured JSON trace logs for agent/enrichment |
+| `LOG_FORMAT` | `text` | Set `json` for machine-readable logs |
+
+**OpenRouter (optional):** set `OPEN_ROUTER_API_KEY` and `LLM_PROVIDER=openrouter`. Agent mode needs tool calling — use `OPENROUTER_AGENT_MODEL_ID=openai/gpt-oss-20b:free`.
+
+Full reference: [`.env.example`](./.env.example)
+
+---
 
 ## Tests
 
 ```bash
 pytest
+ruff check agent api tests
 ```
 
-Output contract tests live in `tests/unit/test_validator.py`. JSON Schema source of truth: `agent/schema/resume-screening-result-v1.json`.
+Contract tests: `tests/unit/test_validator.py`  
+JSON Schema: `agent/schema/resume-screening-result-v1.json`
+
+---
 
 ## Project layout
 
 ```
-agent/     Pipeline, tools, security, schema, cache, audit
-api/       FastAPI entrypoint
-tests/     Unit and integration tests
+agent/          Pipeline, ADK tools, scoring, security, sandbox
+api/            FastAPI entrypoint (/screen, /health)
+tests/          Unit and integration tests
+docs/           Architecture, migration guides
 ```
+
+---
+
+## Documentation
+
+| Doc | Description |
+|-----|-------------|
+| [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) | ADK + Exa architecture |
+| [`docs/AGENT_MIGRATION.md`](./docs/AGENT_MIGRATION.md) | Phased agent migration |
+| [`json-schema.md`](./json-schema.md) | Output schema reference |
+| [`CONTRACTS.md`](./CONTRACTS.md) | Platform handoff contract |
+| [`flowchart.md`](./flowchart.md) | Pipeline flowcharts |
+| [`implement.md`](./implement.md) | Implementation plan |
+
+---
 
 ## Main platform handoff
 
-After a successful screen, the main app should call `POST /api/applications/update-score` with `resume_similarity_score` and set `resume_screening_status`. See [`CONTRACTS.md`](./CONTRACTS.md).
+After a successful screen, the main app should call `POST /api/applications/update-score` with `resume_similarity_score` and set `resume_screening_status`. Details: [`CONTRACTS.md`](./CONTRACTS.md).
