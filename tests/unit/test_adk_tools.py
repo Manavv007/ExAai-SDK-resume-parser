@@ -280,7 +280,11 @@ def _base_session_state(**extras) -> _FakeState:
         enriched_contents=[
             {
                 "url": "https://github.com/example-candidate",
-                "content": "Open-source Python projects.",
+                "content": (
+                    "===BEGIN EXTERNAL CONTENT: https://github.com/example-candidate===\n"
+                    + ("Open-source Python projects with tests, CI, and documentation. " * 8)
+                    + "\n===END EXTERNAL CONTENT==="
+                ),
                 "domain_category": "code",
             }
         ],
