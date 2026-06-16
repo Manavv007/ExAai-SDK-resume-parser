@@ -302,7 +302,12 @@ def _classify_and_check_url(
 ) -> dict[str, Any]:
     """Run SSRF + allowlist checks for a single URL. Returns a status dict."""
     if url not in allowed_urls:
-        trace_event(logger, "enrichment_batch_rejected", url=url, reason="url_not_in_candidate_list")
+        trace_event(
+            logger,
+            "enrichment_batch_rejected",
+            url=url,
+            reason="url_not_in_candidate_list",
+        )
         return {"ok": False, "url": url, "error": "url_not_in_candidate_list"}
 
     if skip_untrusted and trust_by_url.get(url) == ProfileTrust.SCORING_UNTRUSTED.value:
