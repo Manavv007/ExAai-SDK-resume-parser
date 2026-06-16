@@ -9,6 +9,7 @@ import time
 from typing import Any
 
 from agent.config import Settings
+from agent.logging_config import trace_event
 
 logger = logging.getLogger("exaai_adk.llm_client")
 
@@ -28,6 +29,7 @@ def llm_temperature(settings: Settings | None = None) -> float:
 
 
 _llm_call_state = threading.local()
+_last_env_sync_signature: tuple[str, str, str, str] | None = None
 
 
 def reset_llm_call_count() -> None:
@@ -395,11 +397,18 @@ def create_genai_client(settings: Settings | None = None) -> Any:
 
 def sync_llm_env(settings: Settings) -> None:
     """Expose API keys to google-genai / LiteLLM via process environment."""
+    global _last_env_sync_signature
+    sync_mode = "vertex" if gemini_vertex_active(settings) else "api_key"
+    sync_project = ""
+    sync_location = ""
+    sync_model = settings.gemini_model_id
     if gemini_vertex_active(settings):
         from agent.config import resolve_vertex_gcp_project
 
         project = resolve_vertex_gcp_project(settings)
         location = settings.gcp_region.strip()
+        sync_project = project or "?"
+        sync_location = location or "?"
         os.environ["GOOGLE_GENAI_USE_VERTEXAI"] = "1"
         if project:
             os.environ["GOOGLE_CLOUD_PROJECT"] = project
@@ -408,24 +417,15 @@ def sync_llm_env(settings: Settings) -> None:
         # Vertex ADC and API keys are mutually exclusive in google-genai.
         os.environ.pop("GEMINI_API_KEY", None)
         os.environ.pop("GOOGLE_API_KEY", None)
-        logger.info(
-            "Gemini Vertex AI env synced (project=%s, location=%s, model=%s)",
-            project or "?",
-            location or "?",
-            settings.gemini_model_id,
-        )
     else:
         os.environ.pop("GOOGLE_GENAI_USE_VERTEXAI", None)
         gemini_key = settings.gemini_api_key.strip()
+        sync_project = "-"
+        sync_location = "-"
         if gemini_key:
             # google-genai prefers GOOGLE_API_KEY when both are set; keep them identical.
             os.environ["GEMINI_API_KEY"] = gemini_key
             os.environ["GOOGLE_API_KEY"] = gemini_key
-            logger.info(
-                "Gemini credentials synced from .env (suffix …%s, model=%s)",
-                gemini_key_suffix(settings),
-                settings.gemini_model_id,
-            )
         else:
             os.environ.pop("GEMINI_API_KEY", None)
             os.environ.pop("GOOGLE_API_KEY", None)
@@ -437,6 +437,31 @@ def sync_llm_env(settings: Settings) -> None:
     groq_key = settings.groq_api_key.strip()
     if groq_key:
         os.environ["GROQ_API_KEY"] = groq_key
+
+    signature = (sync_mode, sync_project, sync_location, sync_model)
+    if signature != _last_env_sync_signature:
+        _last_env_sync_signature = signature
+        if sync_mode == "vertex":
+            logger.info(
+                "Gemini Vertex AI env synced (project=%s, location=%s, model=%s)",
+                sync_project,
+                sync_location,
+                sync_model,
+            )
+        else:
+            logger.info(
+                "Gemini credentials synced (mode=%s, model=%s)",
+                sync_mode,
+                sync_model,
+            )
+        trace_event(
+            logger,
+            "llm_env_sync",
+            sync_mode=sync_mode,
+            project=sync_project,
+            location=sync_location,
+            model=sync_model,
+        )
 
 
 def create_adk_model(settings: Settings) -> Any:

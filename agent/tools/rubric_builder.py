@@ -60,15 +60,19 @@ def _coerce_jd_structured(jd_structured: JdStructured | dict[str, Any]) -> JdStr
             req_type = None
         requirements.append(JdRequirement(text=text, weight=weight, requirement_type=req_type))
 
-    return JdStructured(
+    from agent.tools.portfolio_signal import resolve_role_category
+
+    coerced = JdStructured(
         job_title=jd_structured.get("job_title"),
         domain=str(jd_structured.get("domain") or "general"),
         industry=jd_structured.get("industry"),
         seniority=jd_structured.get("seniority"),
+        role_category=resolve_role_category(jd_structured),
         must_have=list(jd_structured.get("must_have") or []),
         nice_to_have=list(jd_structured.get("nice_to_have") or []),
         requirements=requirements,
     )
+    return coerced
 
 
 def infer_requirement_type(requirement: str, domain: str = "general") -> str:

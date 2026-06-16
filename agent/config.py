@@ -328,6 +328,17 @@ class Settings(BaseSettings):
 
     agent_version: str = "0.1.0"
     log_level: str = "INFO"
+    log_format: str = Field(
+        default="text",
+        description="Logging format: text (default) or json",
+    )
+    agent_trace_enabled: bool = Field(
+        default=False,
+        description=(
+            "Enable detailed trace logs for agent lifecycle, tool calls, and enrichment "
+            "decision paths."
+        ),
+    )
     host: str = "0.0.0.0"
     port: int = 8080
 

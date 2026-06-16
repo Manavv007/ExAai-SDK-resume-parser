@@ -54,6 +54,8 @@ def process_screening_submission(
             github_repo_analyses=merged_state.get("github_repo_analyses"),
             profile_urls=list(merged_state.get("profile_urls") or []),
             profile_url_meta=list(merged_state.get("profile_url_meta") or []),
+            jd_structured=merged_state.get("jd_structured") or {},
+            resume_structured=merged_state.get("resume_structured") or {},
         )
     except (ValueError, TypeError) as exc:
         return {"ok": False, "errors": [str(exc)]}

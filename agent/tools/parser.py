@@ -17,6 +17,14 @@ from docx import Document
 from agent.config import get_settings
 
 FileFormat = Literal["pdf", "docx", "txt"]
+RoleCategory = Literal[
+    "software_engineering",
+    "aiml",
+    "data_science",
+    "design",
+    "research_academic",
+    "non_portfolio",
+]
 
 _MUST_HAVE_PATTERNS = re.compile(
     r"(?im)^(?:[-*•]\s*)?(?:required|must\s+have|must-have|minimum|essential)\s*[:\-]?\s*(.+)$"
@@ -105,6 +113,7 @@ class JdStructured:
     domain: str = "general"
     industry: str | None = None
     seniority: str | None = None
+    role_category: RoleCategory = "non_portfolio"
     must_have: list[str] = field(default_factory=list)
     nice_to_have: list[str] = field(default_factory=list)
     requirements: list[JdRequirement] = field(default_factory=list)
@@ -359,11 +368,21 @@ job_title (string|null),
 domain (technical|design|academic|writing|business|healthcare|general),
 industry (string|null),
 seniority (string|null),
+role_category (one of: software_engineering, aiml, data_science, design,
+research_academic, non_portfolio),
 requirements (array of objects, each with:
   text (string),
   weight ("must_have" or "nice_to_have"),
   requirement_type (one of: technical_skill, soft_skill, experience, education, responsibility)
 ).
+
+Classify role_category from title and duties (not brittle keyword rules):
+- software_engineering: general SWE/backend/frontend/devops/platform roles
+- aiml: ML/AI/LLM/deep-learning engineering or research engineering
+- data_science: data scientist/analyst/BI/analytics roles
+- design: UX/UI/product/graphic/visual design roles
+- research_academic: academic/research/postdoc/publication-heavy roles
+- non_portfolio: HR, sales, PM, operations, and other roles without standard portfolios
 
 Classify requirement_type by meaning for ANY industry (e.g. RN license -> education,
 years of experience -> experience, patient communication -> soft_skill).
@@ -393,11 +412,24 @@ JOB DESCRIPTION:
         data.get("nice_to_have") or []
     )
 
+    from agent.tools.portfolio_signal import infer_role_category, normalize_role_category
+
+    role_category = normalize_role_category(data.get("role_category"))
+    if role_category == "non_portfolio" and not data.get("role_category"):
+        role_category = infer_role_category(
+            job_title=data.get("job_title"),
+            domain=str(data.get("domain") or "general"),
+            jd_text=jd_text,
+            must_have=must_have,
+            nice_to_have=nice_to_have,
+        )
+
     return JdStructured(
         job_title=data.get("job_title"),
         domain=str(data.get("domain") or "general"),
         industry=data.get("industry"),
         seniority=data.get("seniority"),
+        role_category=role_category,
         must_have=must_have,
         nice_to_have=nice_to_have,
         requirements=requirements,
