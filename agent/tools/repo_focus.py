@@ -212,7 +212,8 @@ def infer_repo_type_tags_from_signals(
         tags.add("data_pipeline")
     if any(marker in paths_blob for marker in ("terraform", "helm", "k8s", "pulumi")):
         tags.add("infra_iac_repo")
-    if any(path.lower().endswith(("pyproject.toml", "setup.py", "cargo.toml", "go.mod")) for path in paths):
+    project_roots = ("pyproject.toml", "setup.py", "cargo.toml", "go.mod")
+    if any(path.lower().endswith(project_roots) for path in paths):
         tags.add("sdk_or_library")
     return sorted(tags)
 
@@ -247,7 +248,8 @@ def classify_repo_role(
     tags = {str(tag).strip() for tag in (repo_type_tags or []) if str(tag).strip()}
     profile = {str(tag).strip() for tag in (candidate_tags or []) if str(tag).strip()}
     paths = [str(path) for path in (file_paths or []) if path]
-    jd = {str(keyword).strip().lower() for keyword in (jd_keywords or set()) if str(keyword).strip()}
+    jd_source = jd_keywords or set()
+    jd = {str(keyword).strip().lower() for keyword in jd_source if str(keyword).strip()}
 
     css_html_ratio = _css_html_ratio(paths)
     if css_html_ratio >= 0.65 and "backend_service" not in tags:
@@ -300,7 +302,8 @@ def reconcile_sandbox_report_classification(
     """Re-classify a sandbox report using profiler tags and JD-aware rules."""
     profile = report.get("repo_profile") if isinstance(report.get("repo_profile"), dict) else {}
     framework_markers = list(profile.get("framework_markers") or [])
-    architecture = profile.get("architecture") if isinstance(profile.get("architecture"), dict) else {}
+    arch = profile.get("architecture")
+    architecture = arch if isinstance(arch, dict) else {}
     layers = list(architecture.get("layers") or [])
     paths = list(file_paths or [])
     if not paths:

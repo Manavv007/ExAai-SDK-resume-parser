@@ -48,7 +48,8 @@ def _classification_context_from_state(state: dict[str, Any]) -> tuple[list[str]
         github = {}
     candidate_tags = list(github.get("candidate_tags") or state.get("candidate_tags") or [])
     jd_structured = state.get("jd_structured")
-    jd_keywords = jd_keywords_from_structured(jd_structured if isinstance(jd_structured, dict) else None)
+    jd_dict = jd_structured if isinstance(jd_structured, dict) else None
+    jd_keywords = jd_keywords_from_structured(jd_dict)
     return candidate_tags, jd_keywords
 
 
@@ -79,7 +80,8 @@ def _apply_reconciled_classifications(
             focus_by_url[url]["repo_role"] = role
         if isinstance(structure, dict) and structure:
             structure["classification"] = role
-            profile = report.get("repo_profile") if isinstance(report.get("repo_profile"), dict) else {}
+            repo_profile = report.get("repo_profile")
+            profile = repo_profile if isinstance(repo_profile, dict) else {}
             structure["repo_type_tags"] = list(profile.get("repo_type_tags") or [])
             structure_cache[url] = structure
 
@@ -414,8 +416,8 @@ async def run_risk_only_sandbox_pre_pass(state: dict[str, Any]) -> bool:
         if not isinstance(report, dict):
             continue
         url = str(report.get("url") or "")
-        focus = focus_by_url.get(url) or {}
-        profile = report.get("repo_profile") if isinstance(report.get("repo_profile"), dict) else {}
+        repo_profile = report.get("repo_profile")
+        profile = repo_profile if isinstance(repo_profile, dict) else {}
         profile["evaluation_mode"] = "risk_only"
         report["repo_profile"] = profile
         report["evaluation_mode"] = "risk_only"

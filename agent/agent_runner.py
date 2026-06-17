@@ -75,7 +75,8 @@ Sandbox scoring rules (when run_sandbox_analysis was used):
 - Penalize aligned-repo material risk: CRITICAL/SEVERE risk_tier means resume_similarity_score
   should be roughly 60-65 even if the resume reads well.
 - Orthogonal coursework repos do not offset aligned-repo risk.
-- Copy exact rubric criterion text into requirement_matches and cite resume/profile/sandbox evidence.
+- Copy exact rubric criterion text into requirement_matches and cite resume/profile/
+  sandbox evidence.
 - Use match_score on a 5-point scale (0, 5, 10, …, 100).
 
 Trust tiers (profile_trust_by_url):

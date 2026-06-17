@@ -16,7 +16,11 @@ from agent.logging_config import trace_event
 from agent.security.allowlist import check_allowlist
 from agent.security.profile_identity import ProfileTrust
 from agent.security.ssrf_guard import validate_url
-from agent.tools.crawler import fetch_url_html_for_link_discovery, fetch_url_text, fetch_url_text_batch
+from agent.tools.crawler import (
+    fetch_url_html_for_link_discovery,
+    fetch_url_text,
+    fetch_url_text_batch,
+)
 from agent.tools.github_analyzer import (
     ensure_github_analysis_after_discovery,
     normalize_github_profile_url,

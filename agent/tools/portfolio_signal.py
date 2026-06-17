@@ -591,7 +591,12 @@ def is_portfolio_like_url(
         str(candidate_name or ""),
         list(known_handles or []),
     )
-    logger.debug("portfolio_score url=%s score=%d threshold=%d", url, score, _PORTFOLIO_SCORE_THRESHOLD)
+    logger.debug(
+        "portfolio_score url=%s score=%d threshold=%d",
+        url,
+        score,
+        _PORTFOLIO_SCORE_THRESHOLD,
+    )
     return score >= _PORTFOLIO_SCORE_THRESHOLD
 
 

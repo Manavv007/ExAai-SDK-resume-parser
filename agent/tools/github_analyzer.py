@@ -633,7 +633,9 @@ def _classify_candidate_tags(
         "backend_engineer": ("fastapi", "flask", "express", "backend", "api"),
         "fullstack_engineer": ("fullstack", "frontend", "backend"),
         "ml_engineer": ("ml", "training", "pytorch", "tensorflow"),
-        "ai_engineer": ("langchain", "llm", "rag", "agent", "ai", "embedding", "retrieval", "vector"),
+        "ai_engineer": (
+            "langchain", "llm", "rag", "agent", "ai", "embedding", "retrieval", "vector",
+        ),
         "cybersecurity_engineer": ("security", "siem", "ctf", "vulnerability", "threat"),
         "data_engineer": ("airflow", "pipeline", "warehouse", "etl", "data", "embedding"),
         "devops_platform_engineer": ("terraform", "helm", "kubernetes", "platform", "devops"),
