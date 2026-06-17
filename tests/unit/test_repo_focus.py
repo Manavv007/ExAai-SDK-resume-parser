@@ -6,7 +6,9 @@ from agent.tools.repo_focus import (
     build_mandatory_focus_paths,
     classify_content_quality,
     classify_repo_role,
+    infer_repo_type_tags_from_signals,
     merge_repo_focus_spec,
+    reconcile_sandbox_report_classification,
     resolve_focus_path,
     validate_orchestrated_sandbox_repo_spec,
     validate_repo_focus_paths,
@@ -106,6 +108,15 @@ def test_validate_orchestrated_spec_requires_focus_paths_and_matching_classifica
     )
     assert any("does not match" in err for err in errors)
 
+    conservative = validate_orchestrated_sandbox_repo_spec(
+        repo_url="https://github.com/dev/service",
+        classification="peripheral",
+        structure_classification="aligned",
+        focus_paths=[{"path": "app/main.py"}],
+        require_agent_focus=True,
+    )
+    assert not any("does not match" in err for err in conservative)
+
     missing_focus = validate_orchestrated_sandbox_repo_spec(
         repo_url="https://github.com/dev/service",
         classification="aligned",
@@ -158,3 +169,61 @@ def test_build_mandatory_focus_paths_includes_manifests() -> None:
     assert "README.md" in selected
     assert "requirements.txt" in selected
     assert "main.py" in selected
+
+
+def test_infer_repo_type_tags_detects_rag_pipeline_from_paths() -> None:
+    tags = infer_repo_type_tags_from_signals(
+        file_paths=[
+            "backend/app/services/rag_retriever.py",
+            "backend/app/api/v1/chat.py",
+            "requirements.txt",
+        ],
+        dependencies={"langchain", "pinecone-client", "fastapi"},
+        framework_markers=["fastapi", "langchain"],
+        architecture_layers=["pipeline", "data", "services"],
+        base_tags=["backend_service"],
+    )
+    assert "ai_agent_project" in tags
+    assert "data_pipeline" in tags
+    assert "rag_pipeline" in tags
+
+
+def test_classify_saral_like_repo_aligned_for_ai_jd() -> None:
+    jd_keywords = {"rag", "embedding", "llm", "fastapi", "python", "pipeline"}
+    role = classify_repo_role(
+        repo_type_tags=[
+            "backend_service",
+            "ai_agent_project",
+            "data_pipeline",
+            "rag_pipeline",
+        ],
+        candidate_tags=["ai_engineer", "backend_engineer"],
+        file_paths=[
+            "backend/app/services/rag_retriever.py",
+            "backend/app/services/llm_engine.py",
+        ],
+        jd_keywords=jd_keywords,
+        framework_markers=["fastapi", "langchain"],
+    )
+    assert role == "aligned"
+
+
+def test_reconcile_sandbox_report_upgrades_classification() -> None:
+    report = {
+        "url": "https://github.com/user/saral",
+        "classification": "peripheral",
+        "repo_profile": {
+            "framework_markers": ["fastapi", "langchain"],
+            "architecture": {"layers": ["pipeline", "data", "services"]},
+            "repo_type_tags": ["backend_service", "ai_agent_project", "data_pipeline"],
+            "project_shape": "interactive_app",
+        },
+    }
+    role = reconcile_sandbox_report_classification(
+        report,
+        candidate_tags=["ai_engineer"],
+        jd_keywords={"rag", "embedding", "llm"},
+        file_paths=["backend/app/services/rag_retriever.py"],
+    )
+    assert role == "aligned"
+    assert report["classification"] == "aligned"

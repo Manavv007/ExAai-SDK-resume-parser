@@ -14,6 +14,7 @@ from agent.adk_tools import (
     analyze_github,
     fetch_profiles,
     get_github_repo_structures,
+    list_candidate_profile_urls,
     run_sandbox_analysis,
     submit_screening_result,
 )
@@ -50,13 +51,14 @@ from agent.tools.validator import validate_result_detailed
 
 def _screening_agent_tools() -> list[Any]:
     tools: list[Any] = [
+        list_candidate_profile_urls,
         fetch_profiles,
         submit_screening_result,
         analyze_github,
     ]
     if agent_evidence_orchestration_active():
-        tools.insert(0, get_github_repo_structures)
-        tools.insert(2, run_sandbox_analysis)
+        tools.insert(2, get_github_repo_structures)
+        tools.insert(4, run_sandbox_analysis)
     return tools
 
 

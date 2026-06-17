@@ -10,7 +10,12 @@ from typing import Any
 from google.adk.tools.tool_context import ToolContext
 
 from agent.config import get_settings
-from agent.enrichment import fetch_profile_url, fetch_profile_urls_batch_async
+from agent.enrichment import (
+    fetch_budget_remaining,
+    fetch_profile_url,
+    fetch_profile_urls_batch_async,
+    suggested_next_profile_urls,
+)
 from agent.logging_config import trace_event
 from agent.prep_context import merge_with_prep_state, register_prep_state
 from agent.sandbox_gating import agent_evidence_orchestration_active, await_sandbox_for_scoring
@@ -19,17 +24,64 @@ from agent.tools.github_analyzer import (
     _evaluate_sandbox_repos,
     _repo_name_from_url,
     align_sandbox_reports_with_urls,
+    merge_github_repo_urls,
     normalize_github_repo_url,
+    resolve_github_username,
+    sync_github_identity,
 )
 from agent.tools.repo_focus import (
     build_repo_structure_summary,
     build_risk_only_focus_spec,
+    jd_keywords_from_structured,
     merge_repo_focus_spec,
+    reconcile_sandbox_report_classification,
     validate_orchestrated_sandbox_repo_spec,
     validate_repo_focus_paths,
 )
 
 logger = logging.getLogger("exaai_adk.adk_tools")
+
+
+def _classification_context_from_state(state: dict[str, Any]) -> tuple[list[str], set[str]]:
+    github = state.get("github_repo_analyses")
+    if not isinstance(github, dict):
+        github = {}
+    candidate_tags = list(github.get("candidate_tags") or state.get("candidate_tags") or [])
+    jd_structured = state.get("jd_structured")
+    jd_keywords = jd_keywords_from_structured(jd_structured if isinstance(jd_structured, dict) else None)
+    return candidate_tags, jd_keywords
+
+
+def _apply_reconciled_classifications(
+    reports: list[dict[str, Any]],
+    *,
+    state: dict[str, Any],
+    structure_cache: dict[str, Any],
+    focus_by_url: dict[str, dict[str, Any]],
+) -> None:
+    """Re-classify sandbox reports using profiler tags and JD-aware rules."""
+    candidate_tags, jd_keywords = _classification_context_from_state(state)
+    for report in reports:
+        if not isinstance(report, dict):
+            continue
+        url = str(report.get("url") or "")
+        structure = structure_cache.get(url) if isinstance(structure_cache.get(url), dict) else {}
+        file_paths = list(structure.get("_file_paths") or [])
+        if not file_paths:
+            file_paths = list((focus_by_url.get(url) or {}).get("file_paths") or [])
+        role = reconcile_sandbox_report_classification(
+            report,
+            candidate_tags=candidate_tags,
+            jd_keywords=jd_keywords,
+            file_paths=file_paths,
+        )
+        if url in focus_by_url:
+            focus_by_url[url]["repo_role"] = role
+        if isinstance(structure, dict) and structure:
+            structure["classification"] = role
+            profile = report.get("repo_profile") if isinstance(report.get("repo_profile"), dict) else {}
+            structure["repo_type_tags"] = list(profile.get("repo_type_tags") or [])
+            structure_cache[url] = structure
 
 
 def _state_ids(state: dict[str, Any]) -> dict[str, str]:
@@ -84,6 +136,11 @@ def list_candidate_profile_urls(tool_context: ToolContext) -> dict[str, Any]:
         "urls": urls,
         "details": meta,
         "trust_by_url": tool_context.state.get("profile_trust_by_url") or {},
+        "discovered_profile_urls": tool_context.state.get("discovered_profile_urls") or [],
+        "discovered_github_repo_urls": tool_context.state.get("discovered_github_repo_urls") or [],
+        "suggested_next_urls": suggested_next_profile_urls(tool_context.state),
+        "github_username": tool_context.state.get("github_username"),
+        "fetch_budget_remaining": fetch_budget_remaining(tool_context.state),
         "count": len(urls),
     }
     _tool_end("list_candidate_profile_urls", tool_context.state, started, url_count=len(urls))
@@ -134,18 +191,28 @@ def fetch_profile_content(url: str, tool_context: ToolContext) -> dict[str, Any]
     return output
 
 
-async def fetch_profiles(urls: list[str], tool_context: ToolContext) -> dict[str, Any]:
+async def fetch_profiles(
+    urls: list[str],
+    tool_context: ToolContext,
+    auto_follow_discovered: bool = False,
+) -> dict[str, Any]:
     """
-    Fetch allowlisted profile URLs in parallel via Exa.
+    Crawl allowlisted profile URLs via Exa (batch).
 
     Skips URLs not on the candidate list, already enriched in session, or
     marked scoring_untrusted. Total unique fetches per session are capped at
-    max_urls_per_resume. Prefer GitHub, portfolio, and Kaggle.
+    max_urls_per_resume.
+
+    By default discovered links are stored in session (`discovered_profile_urls`,
+    `discovered_github_repo_urls`) for you to fetch in a follow-up call.
+    High-value profile URLs (LinkedIn, GitHub profile) are auto-fetched when budget
+    allows. Set auto_follow_discovered=true to auto-crawl all discovered non-GitHub links.
     """
     started = _tool_start(
         "fetch_profiles",
         tool_context.state,
         requested_count=len(urls) if isinstance(urls, list) else -1,
+        auto_follow_discovered=auto_follow_discovered,
     )
     if not isinstance(urls, list):
         result = {
@@ -161,7 +228,12 @@ async def fetch_profiles(urls: list[str], tool_context: ToolContext) -> dict[str
             error=result["error"],
         )
         return result
-    result = await fetch_profile_urls_batch_async(tool_context.state, urls)
+    result = await fetch_profile_urls_batch_async(
+        tool_context.state,
+        urls,
+        auto_follow_discovered=auto_follow_discovered,
+    )
+    register_prep_state(tool_context.state)
     _tool_end(
         "fetch_profiles",
         tool_context.state,
@@ -170,6 +242,9 @@ async def fetch_profiles(urls: list[str], tool_context: ToolContext) -> dict[str
         fetched=result.get("fetched"),
         skipped_count=len(result.get("skipped") or []),
         truncated=result.get("truncated"),
+        discovered_github_count=len(result.get("discovered_github_repo_urls") or []),
+        fetch_budget_remaining=result.get("fetch_budget_remaining"),
+        github_username=result.get("github_username"),
     )
     return result
 
@@ -203,12 +278,28 @@ async def submit_screening_result(
     outcome = process_screening_submission(merged_state, result)
     if outcome.get("ok"):
         tool_context.state["screening_result"] = outcome["screening_result"]
+    validation_errors = outcome.get("errors") or []
+    error_summary = (
+        "; ".join(str(item) for item in validation_errors[:3])
+        if validation_errors
+        else outcome.get("message")
+    )
+    if not outcome.get("ok") and validation_errors:
+        logger.warning(
+            "submit_screening_result validation failed application_id=%s errors=%s",
+            merged_state.get("application_id"),
+            validation_errors,
+        )
+        outcome["message"] = (
+            "Validation failed. Fix the payload and resubmit. "
+            + str(error_summary or "See errors.")
+        )
     _tool_end(
         "submit_screening_result",
         tool_context.state,
         started,
         status="ok" if outcome.get("ok") else "error",
-        error=outcome.get("error"),
+        error=error_summary,
     )
     return outcome
 
@@ -271,6 +362,7 @@ async def run_risk_only_sandbox_pre_pass(state: dict[str, Any]) -> bool:
     if not isinstance(github, dict):
         github = {}
     candidate_tags = list(github.get("candidate_tags") or state.get("candidate_tags") or [])
+    _, jd_keywords = _classification_context_from_state(state)
     structure_cache = state.get("github_repo_structures")
     if not isinstance(structure_cache, dict):
         structure_cache = {}
@@ -289,6 +381,7 @@ async def run_risk_only_sandbox_pre_pass(state: dict[str, Any]) -> bool:
                 languages=_repo_meta_from_state(state, repo_url).get("languages") or {},
                 repo_type_tags=_repo_meta_from_state(state, repo_url).get("repo_type_tags") or [],
                 candidate_tags=candidate_tags,
+                jd_keywords=jd_keywords,
             )
             structure["_file_paths"] = file_paths
             structure_cache[repo_url] = structure
@@ -322,13 +415,17 @@ async def run_risk_only_sandbox_pre_pass(state: dict[str, Any]) -> bool:
             continue
         url = str(report.get("url") or "")
         focus = focus_by_url.get(url) or {}
-        repo_role = str(focus.get("repo_role") or "peripheral")
         profile = report.get("repo_profile") if isinstance(report.get("repo_profile"), dict) else {}
-        profile["repo_role"] = repo_role
         profile["evaluation_mode"] = "risk_only"
         report["repo_profile"] = profile
-        report["classification"] = repo_role
         report["evaluation_mode"] = "risk_only"
+
+    _apply_reconciled_classifications(
+        reports,
+        state=state,
+        structure_cache=structure_cache,
+        focus_by_url=focus_by_url,
+    )
 
     selected_urls = list(github.get("selected_sandbox_repo_urls") or requested_urls)
     merged_reports = align_sandbox_reports_with_urls(
@@ -411,6 +508,7 @@ async def execute_sandbox_analysis_for_state(
     if not isinstance(github, dict):
         github = {}
     candidate_tags = list(github.get("candidate_tags") or state.get("candidate_tags") or [])
+    _, jd_keywords = _classification_context_from_state(state)
     structure_cache = state.get("github_repo_structures")
     if not isinstance(structure_cache, dict):
         structure_cache = {}
@@ -439,6 +537,7 @@ async def execute_sandbox_analysis_for_state(
                 languages=_repo_meta_from_state(state, repo_url).get("languages") or {},
                 repo_type_tags=_repo_meta_from_state(state, repo_url).get("repo_type_tags") or [],
                 candidate_tags=candidate_tags,
+                jd_keywords=jd_keywords,
             )
             structure["_file_paths"] = file_paths
             structure_cache[repo_url] = structure
@@ -470,7 +569,7 @@ async def execute_sandbox_analysis_for_state(
                 )
             )
 
-        repo_role = str(spec.get("classification") or structure_classification or "peripheral")
+        repo_role = str(structure_classification or spec.get("classification") or "peripheral")
         max_files = int(getattr(settings, "sandbox_focus_max_files", 12) or 12)
         if orchestration_active and (agent_focus or allow_empty_focus_paths):
             max_files = focus_path_limit
@@ -510,15 +609,12 @@ async def execute_sandbox_analysis_for_state(
         settings,
         file_focus_by_url=focus_by_url,
     )
-    for report in reports:
-        url = str(report.get("url") or "")
-        if url and url in focus_by_url:
-            profile = (
-                report.get("repo_profile") if isinstance(report.get("repo_profile"), dict) else {}
-            )
-            profile["repo_role"] = focus_by_url[url].get("repo_role")
-            report["repo_profile"] = profile
-            report["classification"] = focus_by_url[url].get("repo_role")
+    _apply_reconciled_classifications(
+        reports,
+        state=state,
+        structure_cache=structure_cache,
+        focus_by_url=focus_by_url,
+    )
 
     selected_urls = list(github.get("selected_sandbox_repo_urls") or requested_urls)
     merged_reports = align_sandbox_reports_with_urls(
@@ -582,14 +678,9 @@ def _github_repo_urls_from_state(state: dict[str, Any]) -> list[str]:
         for item in github.get("repo_analyses") or []:
             if isinstance(item, dict) and item.get("url"):
                 urls.append(str(item["url"]))
-    normalized: list[str] = []
-    seen: set[str] = set()
-    for url in urls:
-        clean = normalize_github_repo_url(str(url or ""))
-        if clean and clean not in seen:
-            seen.add(clean)
-            normalized.append(clean)
-    return normalized
+    urls.extend(list(github.get("discovered_github_repo_urls") or []))
+    urls.extend(list(state.get("discovered_github_repo_urls") or []))
+    return merge_github_repo_urls(urls)
 
 
 def _repo_meta_from_state(state: dict[str, Any], repo_url: str) -> dict[str, Any]:
@@ -639,6 +730,9 @@ async def get_github_repo_structures(tool_context: ToolContext) -> dict[str, Any
     """
     started = _tool_start("get_github_repo_structures", tool_context.state)
     state = merge_with_prep_state(tool_context.state)
+    sync_github_identity(state)
+    tool_context.state["github_username"] = state.get("github_username")
+    tool_context.state["github_repo_analyses"] = state.get("github_repo_analyses")
     github = state.get("github_repo_analyses")
     if not isinstance(github, dict) or not github.get("username"):
         result = {
@@ -656,6 +750,7 @@ async def get_github_repo_structures(tool_context: ToolContext) -> dict[str, Any
         return result
 
     candidate_tags = list(github.get("candidate_tags") or [])
+    _, jd_keywords = _classification_context_from_state(state)
     repo_urls = _github_repo_urls_from_state(state)
     if not repo_urls:
         result = {
@@ -691,6 +786,7 @@ async def get_github_repo_structures(tool_context: ToolContext) -> dict[str, Any
             languages=static_meta.get("languages") or meta.get("languages") or {},
             repo_type_tags=repo_type_tags,
             candidate_tags=candidate_tags,
+            jd_keywords=jd_keywords,
         )
         summary["description"] = static_meta.get("description") or meta.get("description")
         summary["_file_paths"] = file_paths
@@ -751,6 +847,33 @@ async def run_sandbox_analysis(
     return result
 
 
+def _github_analysis_needs_refresh(state: dict[str, Any], github_username: str) -> bool:
+    """True when portfolio discovery found a new GitHub identity or repos."""
+    cached = state.get("github_repo_analyses")
+    if not isinstance(cached, dict) or not cached.get("repo_analyses"):
+        return True
+    cached_user = str(cached.get("username") or "").strip().lower()
+    if cached_user and cached_user != github_username.strip().lower():
+        return True
+    discovered = {
+        normalize_github_repo_url(str(url)) or str(url)
+        for url in (state.get("discovered_github_repo_urls") or [])
+    }
+    discovered = {url for url in discovered if url}
+    if not discovered:
+        return False
+    selected = {
+        normalize_github_repo_url(str(url)) or str(url)
+        for url in (cached.get("selected_sandbox_repo_urls") or [])
+    }
+    resume_repos = {
+        normalize_github_repo_url(str(url)) or str(url)
+        for url in (cached.get("resume_github_repo_urls") or [])
+    }
+    known = {url for url in selected | resume_repos if url}
+    return bool(discovered - known)
+
+
 async def analyze_github(tool_context: ToolContext) -> dict[str, Any]:
     """
     Analyze the candidate's GitHub repositories for coding style and technical depth.
@@ -759,7 +882,8 @@ async def analyze_github(tool_context: ToolContext) -> dict[str, Any]:
     repos. The resulting analysis is saved in the session and used in final scoring.
     """
     started = _tool_start("analyze_github", tool_context.state)
-    github_username = tool_context.state.get("github_username")
+    sync_github_identity(tool_context.state)
+    github_username = resolve_github_username(tool_context.state)
     if not github_username:
         result = {
             "ok": False,
@@ -775,8 +899,13 @@ async def analyze_github(tool_context: ToolContext) -> dict[str, Any]:
         )
         return result
 
+    tool_context.state["github_username"] = github_username
     github_repo_analyses = tool_context.state.get("github_repo_analyses")
-    if github_repo_analyses and github_repo_analyses.get("repo_analyses"):
+    if (
+        github_repo_analyses
+        and github_repo_analyses.get("repo_analyses")
+        and not _github_analysis_needs_refresh(tool_context.state, github_username)
+    ):
         result = {
             "ok": True,
             "username": github_username,
@@ -791,16 +920,19 @@ async def analyze_github(tool_context: ToolContext) -> dict[str, Any]:
 
     try:
         profile_urls = tool_context.state.get("profile_urls") or []
+        discovered_repo_urls = tool_context.state.get("discovered_github_repo_urls") or []
         jd_structured = tool_context.state.get("jd_structured") or {}
         from agent.sandbox_gating import sandbox_mode_for_settings
 
         analysis = await analyze_github_repos(
-            github_username,
-            profile_urls,
-            jd_structured,
+            username=github_username,
+            repo_urls=profile_urls,
+            discovered_repo_urls=discovered_repo_urls,
+            jd_structured=jd_structured,
             sandbox_mode=sandbox_mode_for_settings(),
         )
         tool_context.state["github_repo_analyses"] = analysis
+        register_prep_state(tool_context.state)
         result = {
             "ok": True,
             "username": github_username,

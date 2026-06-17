@@ -36,6 +36,52 @@ def test_list_candidate_profile_urls_includes_trust() -> None:
     assert result["count"] == 1
     assert "github.com" in result["urls"][0]
     assert result["trust_by_url"]["https://github.com/janedoe"] == "scoring_trusted"
+    assert "fetch_budget_remaining" in result
+    assert "suggested_next_urls" in result
+
+
+@patch("agent.enrichment.fetch_url_text_batch")
+def test_fetch_profiles_agent_controlled_discovery_does_not_auto_follow(
+    mock_fetch_batch, test_settings
+) -> None:
+    portfolio = "https://janedoe.dev/portfolio"
+    discovered_repo = "https://github.com/janedoe/portfolio-app"
+
+    mock_fetch_batch.return_value = {
+        portfolio: (
+            "===BEGIN EXTERNAL CONTENT: https://janedoe.dev/portfolio===\n"
+            f"Projects and code: {discovered_repo}\n"
+            + ("portfolio links " * 20)
+            + "\n===END EXTERNAL CONTENT==="
+        )
+    }
+
+    ctx = MagicMock()
+    ctx.state = _FakeState(
+        profile_urls=[portfolio],
+        profile_trust_by_url={portfolio: "scoring_trusted"},
+        enriched_contents=[],
+    )
+
+    mock_cache = MagicMock()
+    mock_cache.get.return_value = None
+    with patch("agent.enrichment.get_url_cache", return_value=mock_cache):
+        with patch(
+            "agent.enrichment.validate_url",
+            return_value=MagicMock(allowed=True, reason=None),
+        ):
+            with patch(
+                "agent.enrichment.check_allowlist",
+                return_value=MagicMock(allowed=True, reason=None, domain_category="portfolio"),
+            ):
+                result = asyncio.run(fetch_profiles([portfolio], ctx))
+
+    assert result["ok"] is True
+    mock_fetch_batch.assert_called_once()
+    assert discovered_repo in result.get("discovered_github_repo_urls", [])
+    assert result.get("discovered_github_count", 0) >= 1
+    assert "suggested_next_urls" in result
+    assert result.get("fetch_budget_remaining") == 9
 
 
 @patch("agent.enrichment.fetch_url_text", return_value="Python projects and OSS contributions.")
@@ -72,6 +118,7 @@ def test_fetch_profile_content_rejects_unknown_url(test_settings) -> None:
     assert result["error"] == "url_not_in_candidate_list"
 
 
+@patch("agent.enrichment.fetch_url_html_for_link_discovery", return_value="")
 @patch(
     "agent.enrichment.fetch_url_text_batch",
     return_value={
@@ -79,7 +126,7 @@ def test_fetch_profile_content_rejects_unknown_url(test_settings) -> None:
         "https://www.behance.net/janedoe": "Portfolio and design systems.",
     },
 )
-def test_fetch_profiles_parallel_success(mock_fetch_batch, test_settings) -> None:
+def test_fetch_profiles_parallel_success(mock_fetch_batch, mock_fetch_html, test_settings) -> None:
     urls = [
         "https://github.com/janedoe",
         "https://www.behance.net/janedoe",
@@ -258,6 +305,112 @@ def test_enrich_profile_urls_skips_exa_for_untrusted(mock_fetch_batch, test_sett
     assert stub["profile_trust"] == "scoring_untrusted"
     assert stub.get("skipped_fetch") is True
     assert stub["content"] == ""
+
+
+@patch("agent.enrichment.fetch_url_text_batch")
+def test_fetch_profiles_discovers_portfolio_links_and_github_repos(
+    mock_fetch_batch, test_settings
+) -> None:
+    portfolio = "https://janedoe.dev/portfolio"
+    discovered_non_github = "https://janedoe.dev/projects/robotics"
+    discovered_repo = "https://github.com/janedoe/portfolio-app"
+
+    mock_fetch_batch.side_effect = [
+        {
+            portfolio: (
+                "===BEGIN EXTERNAL CONTENT: https://janedoe.dev/portfolio===\n"
+                f"Projects: {discovered_non_github} and code: {discovered_repo}\n"
+                + ("portfolio links " * 20)
+                + "\n===END EXTERNAL CONTENT==="
+            )
+        },
+        {discovered_non_github: "Detailed project write-up." * 20},
+    ]
+
+    ctx = MagicMock()
+    ctx.state = _FakeState(
+        profile_urls=[portfolio],
+        profile_trust_by_url={portfolio: "scoring_trusted"},
+        enriched_contents=[],
+    )
+
+    mock_cache = MagicMock()
+    mock_cache.get.return_value = None
+    with patch("agent.enrichment.get_url_cache", return_value=mock_cache):
+        with patch(
+            "agent.enrichment.validate_url",
+            return_value=MagicMock(allowed=True, reason=None),
+        ):
+            with patch(
+                "agent.enrichment.check_allowlist",
+                return_value=MagicMock(allowed=True, reason=None, domain_category="portfolio"),
+            ):
+                result = asyncio.run(
+                    fetch_profiles([portfolio], ctx, auto_follow_discovered=True)
+                )
+
+    assert result["ok"] is True
+    assert result["discovered_non_github_count"] >= 1
+    assert result["discovered_github_count"] >= 1
+    assert discovered_non_github in ctx.state.get("profile_urls", [])
+    assert discovered_repo in ctx.state.get("discovered_github_repo_urls", [])
+
+
+@patch("agent.enrichment.fetch_url_text_batch")
+@patch("agent.enrichment.fetch_url_html_for_link_discovery")
+def test_fetch_profiles_discovers_github_profile_from_html_when_exa_text_omits_links(
+    mock_fetch_html,
+    mock_fetch_batch,
+    test_settings,
+) -> None:
+    portfolio = "https://manavbhavsar.vercel.app/"
+    exa_text = (
+        "===BEGIN EXTERNAL CONTENT: https://manavbhavsar.vercel.app/===\n"
+        "Manav Bhavsar | Full-Stack Backend & AI Engineer\n"
+        "Explore Projects Let's Chat\n"
+        "GitHub Actions CI/CD\n"
+        + ("portfolio content " * 30)
+        + "\n===END EXTERNAL CONTENT==="
+    )
+    mock_fetch_batch.side_effect = [
+        {portfolio: exa_text},
+        {"https://github.com/manavv007": "GitHub profile page content." * 20},
+    ]
+    mock_fetch_html.return_value = (
+        '<html><body><a href="https://github.com/Manavv007">GitHub</a></body></html>'
+    )
+
+    ctx = MagicMock()
+    ctx.state = _FakeState(
+        profile_urls=[portfolio],
+        profile_trust_by_url={portfolio: "scoring_trusted"},
+        enriched_contents=[],
+        resume_structured={"candidate_name": "Manav Bhavsar"},
+    )
+
+    mock_cache = MagicMock()
+    mock_cache.get.return_value = None
+    with patch("agent.enrichment.get_url_cache", return_value=mock_cache):
+        with patch(
+            "agent.enrichment.validate_url",
+            return_value=MagicMock(allowed=True, reason=None),
+        ):
+            with patch(
+                "agent.enrichment.check_allowlist",
+                return_value=MagicMock(allowed=True, reason=None, domain_category="portfolio"),
+            ):
+                result = asyncio.run(
+                    fetch_profiles([portfolio], ctx, auto_follow_discovered=True)
+                )
+
+    assert result["ok"] is True
+    mock_fetch_html.assert_called_once_with(portfolio)
+    profile_urls = [url.lower() for url in ctx.state.get("profile_urls", [])]
+    assert "https://github.com/manavv007" in profile_urls
+    assert ctx.state.get("github_username") == "Manavv007"
+    github = ctx.state.get("github_repo_analyses")
+    assert isinstance(github, dict)
+    assert github.get("username") == "Manavv007"
 
 
 def _base_session_state(**extras) -> _FakeState:

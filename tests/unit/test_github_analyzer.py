@@ -19,7 +19,11 @@ from agent.tools.github_analyzer import (
     analyze_github_repos,
     extract_github_repo_urls,
     extract_github_username,
+    merge_github_repo_urls,
+    normalize_github_profile_url,
     normalize_github_repo_url,
+    resolve_github_username,
+    sync_github_identity,
 )
 from agent.tools.github_client import RepoMeta
 
@@ -55,6 +59,54 @@ def test_extract_github_repo_urls_normalizes_unique_resume_repos() -> None:
     assert extract_github_repo_urls(urls) == [
         "https://github.com/testuser/api-service",
         "https://github.com/testuser/web-app",
+    ]
+
+
+def test_normalize_github_profile_url() -> None:
+    assert normalize_github_profile_url("https://github.com/Manavv007") == (
+        "https://github.com/Manavv007"
+    )
+    assert normalize_github_profile_url("https://github.com/Manavv007/") == (
+        "https://github.com/Manavv007"
+    )
+    assert normalize_github_profile_url("https://github.com/Manavv007/my-repo") is None
+    assert normalize_github_profile_url("https://github.com/topics/python") is None
+
+
+def test_resolve_github_username_from_discovered_repo_urls() -> None:
+    state = {
+        "profile_urls": ["https://manavbhavsar-portfolio.vercel.app/"],
+        "discovered_github_repo_urls": [
+            "https://github.com/manavv007/exaai-adk",
+            "https://github.com/manavv007/other-repo",
+        ],
+    }
+    assert resolve_github_username(state) == "manavv007"
+
+
+def test_sync_github_identity_sets_username_and_analysis_shell() -> None:
+    state = {
+        "profile_urls": ["https://manavbhavsar-portfolio.vercel.app/"],
+        "discovered_github_repo_urls": ["https://github.com/Manavv007/repo-one"],
+    }
+    username = sync_github_identity(state)
+    assert username == "Manavv007"
+    assert state["github_username"] == "Manavv007"
+    github = state["github_repo_analyses"]
+    assert isinstance(github, dict)
+    assert github["username"] == "Manavv007"
+    assert github["repo_analyses"] == []
+
+
+def test_merge_github_repo_urls_preserves_order_and_dedupes() -> None:
+    merged = merge_github_repo_urls(
+        ["https://github.com/a/one", "https://github.com/a/two"],
+        ["https://github.com/a/two", "https://github.com/a/three"],
+    )
+    assert merged == [
+        "https://github.com/a/one",
+        "https://github.com/a/two",
+        "https://github.com/a/three",
     ]
 
 
@@ -502,7 +554,9 @@ async def test_analyze_github_repos() -> None:
         )
 
         analysis = await analyze_github_repos(
-            "testuser", ["https://github.com/testuser"], jd_structured
+            username="testuser",
+            repo_urls=["https://github.com/testuser"],
+            jd_structured=jd_structured,
         )
 
         assert analysis["username"] == "testuser"
@@ -597,9 +651,9 @@ async def test_analyze_github_repos_attaches_sandbox_reports() -> None:
         mock_sandbox.return_value = sandbox_reports
 
         analysis = await analyze_github_repos(
-            "testuser",
-            ["https://github.com/testuser/repo1"],
-            {"job_title": "Python Engineer"},
+            username="testuser",
+            repo_urls=["https://github.com/testuser/repo1"],
+            jd_structured={"job_title": "Python Engineer"},
         )
 
     assert analysis["selected_sandbox_repo_urls"] == ["https://github.com/testuser/repo1"]
@@ -670,9 +724,9 @@ async def test_analyze_github_repos_deferred_skips_inline_sandbox_wait() -> None
         )
 
         analysis = await analyze_github_repos(
-            "testuser",
-            ["https://github.com/testuser/repo1"],
-            {"job_title": "Python Engineer"},
+            username="testuser",
+            repo_urls=["https://github.com/testuser/repo1"],
+            jd_structured={"job_title": "Python Engineer"},
             sandbox_mode="deferred",
         )
 

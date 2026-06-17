@@ -13,6 +13,7 @@ from typing import Any, Literal
 import pydantic
 
 from agent.config import get_settings
+from agent.logging_config import trace_event
 from agent.sandbox.models import RepoExecutionReport
 from agent.tools.github_client import GitHubClient, RepoMeta
 
@@ -125,6 +126,7 @@ class GitHubAnalysis:
     collaboration_summary: str = ""
     commit_hygiene: str = ""
     resume_github_repo_urls: list[str] = field(default_factory=list)
+    discovered_github_repo_urls: list[str] = field(default_factory=list)
     selected_sandbox_repo_urls: list[str] = field(default_factory=list)
     sandbox_reports: list[dict[str, Any]] = field(default_factory=list)
     repo_selection_mode: str = "none"
@@ -145,6 +147,109 @@ def extract_github_username(urls: list[str]) -> str | None:
             if username.lower() not in GITHUB_RESERVED_PATHS:
                 return username
     return None
+
+
+def resolve_github_username(
+    state: dict[str, Any] | None = None,
+    *,
+    explicit_username: str | None = None,
+    profile_urls: list[str] | None = None,
+    discovered_repo_urls: list[str] | None = None,
+) -> str | None:
+    """Resolve GitHub username from session state and/or URL lists."""
+    explicit = str(explicit_username or "").strip()
+    if explicit:
+        return explicit
+
+    urls: list[str] = []
+    if isinstance(state, dict):
+        cached = str(state.get("github_username") or "").strip()
+        if cached:
+            return cached
+        github = state.get("github_repo_analyses")
+        if isinstance(github, dict):
+            from_analysis = str(github.get("username") or "").strip()
+            if from_analysis:
+                return from_analysis
+        urls.extend(str(url) for url in list(state.get("profile_urls") or []) if url)
+        urls.extend(
+            str(url)
+            for url in list(state.get("discovered_github_repo_urls") or [])
+            if url
+        )
+    urls.extend(str(url) for url in list(profile_urls or []) if url)
+    urls.extend(str(url) for url in list(discovered_repo_urls or []) if url)
+    return extract_github_username(urls)
+
+
+def sync_github_identity(state: dict[str, Any]) -> str | None:
+    """Propagate GitHub username and minimal analysis shell after portfolio discovery."""
+    username = resolve_github_username(state)
+    if not username:
+        return None
+
+    state["github_username"] = username
+    github = state.get("github_repo_analyses")
+    if not isinstance(github, dict):
+        github = {}
+    if not github.get("username"):
+        github = {
+            **github,
+            "username": username,
+            "repo_analyses": list(github.get("repo_analyses") or []),
+            "candidate_tags": list(github.get("candidate_tags") or []),
+        }
+        state["github_repo_analyses"] = github
+    return username
+
+
+async def ensure_github_analysis_after_discovery(state: dict[str, Any]) -> bool:
+    """Run GitHub API analysis when discovery resolves a username but prep did not."""
+    sync_github_identity(state)
+    username = resolve_github_username(state)
+    if not username:
+        return False
+
+    github = state.get("github_repo_analyses")
+    if isinstance(github, dict) and github.get("repo_analyses"):
+        return True
+
+    from agent.sandbox_gating import sandbox_mode_for_settings
+
+    try:
+        analysis = await analyze_github_repos(
+            username=username,
+            repo_urls=list(state.get("profile_urls") or []),
+            discovered_repo_urls=list(state.get("discovered_github_repo_urls") or []),
+            jd_structured=state.get("jd_structured") or {},
+            sandbox_mode=sandbox_mode_for_settings(),
+        )
+        state["github_repo_analyses"] = analysis
+        state["github_username"] = username
+        trace_event(
+            logger,
+            "github_analysis_after_discovery",
+            username=username,
+            repo_count=len(analysis.get("repo_analyses") or []),
+        )
+        return True
+    except Exception as exc:
+        logger.warning("GitHub analysis after discovery failed for %s: %s", username, exc)
+        return False
+
+
+def normalize_github_profile_url(url: str) -> str | None:
+    """Normalize a GitHub profile URL (``github.com/{user}``), excluding repo paths."""
+    match = re.search(r"https?://(?:www\.)?github\.com/([^/?#]+)(?:/([^/?#]+))?", url or "")
+    if not match:
+        return None
+    owner = match.group(1).strip()
+    repo_segment = match.group(2)
+    if repo_segment:
+        return None
+    if not owner or owner.lower() in GITHUB_RESERVED_PATHS:
+        return None
+    return f"https://github.com/{owner}"
 
 
 def normalize_github_repo_url(url: str) -> str | None:
@@ -175,6 +280,23 @@ def extract_github_repo_urls(urls: list[str]) -> list[str]:
             seen.add(normalized.lower())
             repo_urls.append(normalized)
     return repo_urls
+
+
+def merge_github_repo_urls(*repo_url_lists: list[str]) -> list[str]:
+    """Merge multiple repo URL lists preserving first-seen order."""
+    seen: set[str] = set()
+    merged: list[str] = []
+    for urls in repo_url_lists:
+        for raw in urls:
+            normalized = normalize_github_repo_url(raw)
+            if not normalized:
+                continue
+            key = normalized.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(normalized)
+    return merged
 
 
 def _repo_key_from_url(url: str) -> tuple[str, str] | None:
@@ -428,6 +550,11 @@ async def _evaluate_sandbox_repos(
     return [results_by_url[url] for url in repo_urls]
 
 
+def get_jd_keywords(jd_structured: dict[str, Any] | None) -> set[str]:
+    """Extract technology keywords from the job description for ranking and classification."""
+    return _get_jd_keywords(jd_structured)
+
+
 def _get_jd_keywords(jd_structured: dict[str, Any] | None) -> set[str]:
     """Extract technology keywords from the job description for ranking."""
     keywords = set()
@@ -506,9 +633,9 @@ def _classify_candidate_tags(
         "backend_engineer": ("fastapi", "flask", "express", "backend", "api"),
         "fullstack_engineer": ("fullstack", "frontend", "backend"),
         "ml_engineer": ("ml", "training", "pytorch", "tensorflow"),
-        "ai_engineer": ("langchain", "llm", "rag", "agent", "ai"),
+        "ai_engineer": ("langchain", "llm", "rag", "agent", "ai", "embedding", "retrieval", "vector"),
         "cybersecurity_engineer": ("security", "siem", "ctf", "vulnerability", "threat"),
-        "data_engineer": ("airflow", "pipeline", "warehouse", "etl", "data"),
+        "data_engineer": ("airflow", "pipeline", "warehouse", "etl", "data", "embedding"),
         "devops_platform_engineer": ("terraform", "helm", "kubernetes", "platform", "devops"),
         "general_software_engineer": ("python", "java", "go", "javascript"),
     }
@@ -1279,17 +1406,53 @@ async def _analyze_single_repo(
     if len(dependency_summary) > 200:
         dependency_summary = dependency_summary[:200] + "..."
 
-    repo_type_tags: list[str] = []
+    from agent.tools.repo_focus import infer_repo_type_tags_from_signals
+
+    framework_markers: list[str] = []
+    signal_blob = " ".join(file_paths).lower() + " " + " ".join(repo_deps).lower()
+    for marker in (
+        "fastapi",
+        "flask",
+        "django",
+        "langchain",
+        "streamlit",
+        "react",
+        "nextjs",
+        "express",
+    ):
+        if marker in signal_blob:
+            framework_markers.append(marker)
+
+    base_tags: list[str] = []
     if project_type == "web-app":
-        repo_type_tags.append("frontend_app")
+        base_tags.append("frontend_app")
     elif project_type == "dockerized-app":
-        repo_type_tags.append("backend_service")
+        base_tags.append("backend_service")
     elif project_type == "library":
-        repo_type_tags.append("sdk_or_library")
+        base_tags.append("sdk_or_library")
+    elif code_file_count > 10:
+        base_tags.append("automation_tool")
     else:
-        repo_type_tags.append("research_prototype" if code_file_count <= 10 else "automation_tool")
-    if has_docker and "backend_service" not in repo_type_tags:
-        repo_type_tags.append("infra_iac_repo")
+        base_tags.append("research_prototype")
+    if has_docker and "backend_service" not in base_tags:
+        base_tags.append("infra_iac_repo")
+
+    architecture_layers: list[str] = []
+    lower_paths = " ".join(file_paths).lower()
+    if any(segment in lower_paths for segment in ("backend", "api", "services")):
+        architecture_layers.append("services")
+    if any(segment in lower_paths for segment in ("pipeline", "ingest", "chunk", "embed")):
+        architecture_layers.append("pipeline")
+    if any(segment in lower_paths for segment in ("data", "models", "schema")):
+        architecture_layers.append("data")
+
+    repo_type_tags = infer_repo_type_tags_from_signals(
+        file_paths=file_paths,
+        dependencies=repo_deps,
+        framework_markers=framework_markers,
+        architecture_layers=architecture_layers,
+        base_tags=base_tags,
+    )
 
     commits_dicts = [
         {"sha": c.sha, "message": c.message, "author_name": c.author_name, "date": c.date}
@@ -1322,6 +1485,7 @@ async def _analyze_single_repo(
 async def analyze_github_repos(
     username: str,
     repo_urls: list[str] | None = None,
+    discovered_repo_urls: list[str] | None = None,
     jd_structured: dict[str, Any] | None = None,
     *,
     sandbox_mode: Literal["inline", "deferred"] = "inline",
@@ -1341,6 +1505,8 @@ async def analyze_github_repos(
     """
     settings = get_settings()
     resume_repo_urls = extract_github_repo_urls(repo_urls or [])
+    discovered_repo_urls = extract_github_repo_urls(discovered_repo_urls or [])
+    all_repo_urls = merge_github_repo_urls(resume_repo_urls, discovered_repo_urls)
     if not settings.github_analysis_enabled:
         logger.info("GitHub deep analysis is disabled by configuration.")
         return asdict(
@@ -1355,6 +1521,7 @@ async def analyze_github_repos(
                 collaboration_summary="GitHub analysis disabled by configuration.",
                 commit_hygiene="GitHub analysis disabled by configuration.",
                 resume_github_repo_urls=resume_repo_urls,
+                discovered_github_repo_urls=discovered_repo_urls,
                 selected_sandbox_repo_urls=[],
                 sandbox_reports=[],
                 repo_selection_mode="disabled",
@@ -1375,7 +1542,7 @@ async def analyze_github_repos(
             logger.warning(f"No repositories found for GitHub user {username}")
             selected_sandbox_urls, selection_mode = _select_sandbox_repo_urls(
                 ranked_repos=[],
-                resume_repo_urls=resume_repo_urls,
+                resume_repo_urls=all_repo_urls,
                 settings=settings,
             )
             sandbox_reports = (
@@ -1395,6 +1562,7 @@ async def analyze_github_repos(
                     collaboration_summary=collab_data["summary"],
                     commit_hygiene="No commits to analyze.",
                     resume_github_repo_urls=resume_repo_urls,
+                    discovered_github_repo_urls=discovered_repo_urls,
                     selected_sandbox_repo_urls=selected_sandbox_urls,
                     sandbox_reports=sandbox_reports,
                     repo_selection_mode=selection_mode,
@@ -1410,18 +1578,18 @@ async def analyze_github_repos(
         resolved_resume_repos = await _resolve_resume_repos_for_analysis(
             client=client,
             all_repos=all_repos,
-            resume_repo_urls=resume_repo_urls,
+            resume_repo_urls=all_repo_urls,
             settings=settings,
         )
         selected_repos, selection_mode = _select_static_repos(
             resolved_resume_repos=resolved_resume_repos,
             ranked_repos=ranked_repos,
-            resume_repo_urls=resume_repo_urls,
+            resume_repo_urls=all_repo_urls,
             settings=settings,
         )
         selected_sandbox_urls, sandbox_selection_mode = _select_sandbox_repo_urls(
             ranked_repos=ranked_repos,
-            resume_repo_urls=resume_repo_urls,
+            resume_repo_urls=all_repo_urls,
             settings=settings,
         )
 
@@ -1466,6 +1634,7 @@ async def analyze_github_repos(
             type(enabled_val),
         )
         logger.info(f"resume_repo_urls: {resume_repo_urls}")
+        logger.info(f"discovered_repo_urls: {discovered_repo_urls}")
         logger.info(f"selected_sandbox_urls: {selected_sandbox_urls}")
         if isinstance(enabled_val, bool):
             run_sandbox = enabled_val
@@ -1475,7 +1644,7 @@ async def analyze_github_repos(
             run_sandbox = False
         elif str(enabled_val).lower() in ("auto", "hybrid"):
             # Dynamic hybrid rules
-            if resume_repo_urls:
+            if all_repo_urls:
                 logger.info(
                     "Hybrid Sandbox: Enabled because candidate's resume "
                     "emphasizes specific projects."
@@ -1546,6 +1715,7 @@ async def analyze_github_repos(
             collaboration_summary=collaboration_style,
             commit_hygiene=commit_hygiene,
             resume_github_repo_urls=resume_repo_urls,
+            discovered_github_repo_urls=discovered_repo_urls,
             selected_sandbox_repo_urls=selected_sandbox_urls if run_sandbox else [],
             sandbox_reports=sandbox_reports,
             repo_selection_mode=(sandbox_selection_mode if run_sandbox else selection_mode),

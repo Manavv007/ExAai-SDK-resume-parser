@@ -23,6 +23,23 @@ def test_compact_medium_file_is_stripped() -> None:
     assert "# header" not in result["content"]
 
 
+def test_compact_medium_module_docstring_does_not_crash() -> None:
+    """Regression: ast.Module has no lineno; docstring span must use the Expr node."""
+    source = "\n".join(
+        [
+            '"""Module-level docstring for the package."""',
+            "",
+            "def work():",
+            "    return 1",
+        ]
+        + ["value = 1"] * 250
+    )
+    result = compact_file_content(source, "app/module_doc.py")
+    assert result["compaction_tier"] == "stripped"
+    assert "Module-level docstring" not in result["content"]
+    assert "def work" in result["content"]
+
+
 def test_compact_large_python_file_is_skeleton() -> None:
     body = "\n".join(f"def f{n}(x):\n    return x + {n}" for n in range(450))
     result = compact_file_content(body, "app/large.py")

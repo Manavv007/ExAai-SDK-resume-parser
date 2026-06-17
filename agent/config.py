@@ -288,11 +288,12 @@ class Settings(BaseSettings):
 
     infer_profile_urls: bool = False
     auto_enrich_profiles: bool = Field(
-        default=True,
+        default=False,
         description=(
             "Pre-fetch resume profile URLs via Exa before agent scoring. "
-            "Populates enriched_contents and sources_crawled even when the agent "
-            "skips fetch_profiles."
+            "Default false — the agent calls fetch_profiles (Exa) on demand. "
+            "Pipeline mode always enriches in run_screening_pipeline_async. "
+            "Set true to restore legacy pre-agent Exa batch in agent mode."
         ),
     )
     profile_scoring_mode: str = Field(

@@ -130,9 +130,9 @@ def prepare_screening_state(
             jd_struct = parse_jd_structured(jd_raw_text)
             res = loop.run_until_complete(
                 analyze_github_repos(
-                    username,
-                    urls,
-                    asdict(jd_struct),
+                    username=username,
+                    repo_urls=urls,
+                    jd_structured=asdict(jd_struct),
                     sandbox_mode=sandbox_mode_for_settings(get_settings()),
                 )
             )
@@ -190,5 +190,7 @@ def prepare_screening_state(
         "profile_identity_cap_score": should_cap_score_for_identity(profile_assessments),
         "github_username": github_username,
         "github_repo_analyses": github_repo_analyses,
+        "discovered_profile_urls": [],
+        "discovered_github_repo_urls": [],
         "prep_latency_ms": int((time.monotonic() - started) * 1000),
     }

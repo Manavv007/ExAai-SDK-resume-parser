@@ -35,6 +35,8 @@ class ScreeningSessionState(TypedDict, total=False):
     start_time: float
     github_username: str | None
     github_repo_analyses: dict[str, Any]
+    discovered_profile_urls: list[str]
+    discovered_github_repo_urls: list[str]
 
 
 # Documented keys for maintainers (TypedDict is not enforced at runtime).
@@ -57,6 +59,8 @@ Agent path (Phase 3+):
   Agent tools: list_candidate_profile_urls, fetch_profiles, submit_screening_result
   (fetch_profile_content optional for single URL).
   screening_result — resume-screening-result-v1 after submit_screening_result succeeds.
+  discovered_profile_urls, discovered_github_repo_urls — depth-1 links discovered from
+  portfolio pages during enrichment.
 
 Pipeline-only scoring / validation:
   correction_prompt, retry_count, processing_time_ms

@@ -30,6 +30,7 @@ from agent.sandbox_gating import (
     sandbox_overlap_active,
     sandbox_required_for_state,
 )
+from agent.tools.portfolio_signal import resolve_role_category
 from agent.tools.rubric_builder import (
     requirement_matches_need_rescore,
     resolve_session_rubric,
@@ -48,40 +49,34 @@ SCREENING_AGENT_INSTRUCTION = """You are a resume screening agent for hiring tea
 Never finish on plain text alone — you MUST call tools until submit_screening_result succeeds.
 Use multiple turns: tools first, then submit on the final turn.
 
-Workflow (agent-orchestrated evidence):
-1. Read the screening brief (resume, JD, rubric, PROFILE_URLS, profile_trust_by_url).
-2. Turn 1 — call tools only (parallel when possible; do NOT submit yet):
-   - get_github_repo_structures() for repo trees, classifications, and suggested focus paths.
-   - fetch_profiles(urls) only when you need additional URLs beyond the pre-fetched Exa
-     profile content already in session (one batch max).
-3. Turn 2 — run_sandbox_analysis(repo_specs) when GitHub repos are in scope.
-   For each repo include repo_url, classification copied exactly from get_github_repo_structures
-   (do not invent), and 1-5 focus_paths of JD-aligned code files you choose from the structure
-   tool (suggested_focus_paths or the file tree). Only your focus_paths are evaluated — no
-   automatic README/manifest padding. Judge aligned repos strictly: empty/stub/TODO content in
-   expected files is a negative signal.
-   Do not penalize orthogonal repos for missing role-specific depth.
-4. Turn 3 — submit_screening_result after reading sandbox digest
-   (risk_tier, vulns, secrets, excerpts).
-   Do NOT lower scores only because repos lack tests or CI.
-   Penalize aligned-repo material risk: CRITICAL/SEVERE risk_tier means
-   resume_similarity_score should
-   be roughly 60-65 even if the resume reads well — one risky aligned repo should not zero out an
-   otherwise strong profile. Weak secret hygiene plus dozens of CVEs is still a notable negative.
-   Orthogonal coursework repos do not offset aligned-repo risk.
-   Include resume_similarity_score, requirement_matches (one per rubric criterion, same order),
-   top_file_evaluation (one row per sandbox top_files path with jd_criteria, match_signal,
-   assessment — server fills file metadata/snippets; omit rows for paths not in sandbox top_files),
-   recommendation, recommendation_reasoning, red_flags.
-   Copy exact rubric criterion text into requirement and cite resume/GitHub/sandbox evidence.
-   Use match_score on a 5-point scale (0, 5, 10, …, 100).
-   You set resume_similarity_score after weighing resume, rubric, and sandbox together.
-   The server also computes evaluation_breakdown (JD fit, repo portfolio, code quality,
-   composite) from sandbox metrics — missing tests/Docker are bonus-only, not penalties.
+Evidence workflow (Exa-first, role-aware):
+1. Read ROLE_CATEGORY, PROFILE_URLS, profile_trust_by_url, and the resume/JD in the brief.
+2. Turn 1 — gather external evidence (parallel when possible; do NOT submit yet):
+   - list_candidate_profile_urls() when you need discovered URLs or fetch budget.
+   - fetch_profiles(urls) via Exa: start with portfolio/personal-site URLs from the resume.
+     Read discovered_github_repo_urls, discovered_profile_urls, suggested_next_urls,
+     github_status_log (after submit), and fetch_budget_remaining in tool responses.
+     High-value follow-ups (LinkedIn, GitHub profile) are auto-fetched when budget allows;
+     call fetch_profiles again for any remaining suggested_next_urls before sandbox.
+3. Turn 2+ — code repos only when relevant to the role:
+   - Software / AI / ML / data roles: analyze_github if needed, then get_github_repo_structures,
+     then run_sandbox_analysis per repo with classification from structures and 1-5 JD-aligned
+     focus_paths. Discovered GitHub repos are already in session — you do not pass them manually.
+   - Design / UX / visual roles: prioritize fetch_profiles on portfolio, Behance, Dribbble,
+     Figma, or personal sites. GitHub and sandbox are OPTIONAL — do NOT penalize candidates
+     for missing GitHub or code repos. Skip get_github_repo_structures and run_sandbox_analysis
+     when no code repositories apply to the role.
+   - Research / academic roles: fetch_profiles on scholar/ORCID/ResearchGate links; GitHub optional.
+4. Final turn — submit_screening_result with resume_similarity_score, requirement_matches,
+   recommendation, recommendation_reasoning, red_flags, and top_file_evaluation when sandbox ran.
 
-Legacy workflow (when structure/sandbox tools are unavailable):
-- Use SANDBOX REPORTS in the brief if already present.
-- Optional fetch_profiles, then submit.
+Sandbox scoring rules (when run_sandbox_analysis was used):
+- Do NOT lower scores only because repos lack tests or CI.
+- Penalize aligned-repo material risk: CRITICAL/SEVERE risk_tier means resume_similarity_score
+  should be roughly 60-65 even if the resume reads well.
+- Orthogonal coursework repos do not offset aligned-repo risk.
+- Copy exact rubric criterion text into requirement_matches and cite resume/profile/sandbox evidence.
+- Use match_score on a 5-point scale (0, 5, 10, …, 100).
 
 Trust tiers (profile_trust_by_url):
 - scoring_trusted: full external content may support criteria when relevant.
@@ -115,33 +110,45 @@ def _build_agent_continuation_message(session_state: dict[str, Any]) -> str:
     repo_urls = _github_repo_urls_from_state(session_state)
     has_structures = bool(session_state.get("github_repo_structures"))
     has_sandbox = _has_sandbox_reports(session_state)
+    enriched_count = len(session_state.get("enriched_contents") or [])
     steps: list[str] = [
         "CONTINUATION REQUIRED — your next response MUST be a submit_screening_result "
         "tool call only.",
         "Do not reply with plain text or summaries.",
     ]
+    if enriched_count == 0:
+        steps.append(
+            "Call fetch_profiles(urls) for portfolio/profile URLs from PROFILE_URLS first."
+        )
     if repo_urls and not has_structures:
-        steps.append("Call get_github_repo_structures() now.")
+        steps.append("Call get_github_repo_structures() now (code roles only).")
     if repo_urls and not has_sandbox:
         steps.append(
             "Call run_sandbox_analysis(repo_specs) for each repo: copy classification from "
             "get_github_repo_structures and provide 1-5 focus_paths (JD-aligned code files)."
         )
-    elif has_sandbox:
+    elif has_sandbox or not repo_urls:
         github = session_state.get("github_repo_analyses")
         reports: list[dict[str, Any]] = []
         if isinstance(github, dict):
             raw = github.get("sandbox_reports")
             if isinstance(raw, list):
                 reports = raw
-        digest = format_sandbox_reports_for_prompt(reports, max_chars=2500)
         rubric = resolve_session_rubric(session_state)
         skeleton = _build_submit_skeleton(_compact_rubric_for_prompt(rubric))
-        steps.append(
-            "Sandbox is complete — call submit_screening_result immediately.\n\n"
-            f"SANDBOX DIGEST:\n{digest}\n\n"
-            f"SUBMIT SKELETON (fill scores/evidence):\n{skeleton}"
-        )
+        if has_sandbox:
+            digest = format_sandbox_reports_for_prompt(reports, max_chars=2500)
+            steps.append(
+                "Sandbox is complete — call submit_screening_result immediately.\n\n"
+                f"SANDBOX DIGEST:\n{digest}\n\n"
+                f"SUBMIT SKELETON (fill scores/evidence):\n{skeleton}"
+            )
+        else:
+            steps.append(
+                "No code sandbox required for this role — call submit_screening_result "
+                "using resume and fetch_profiles evidence.\n\n"
+                f"SUBMIT SKELETON (fill scores/evidence):\n{skeleton}"
+            )
         return "\n".join(steps)
     steps.append("Then call submit_screening_result with your completed scoring payload.")
     return "\n".join(steps)
@@ -392,12 +399,34 @@ def build_agent_user_message(state: dict[str, Any]) -> str:
         if sandbox_reports and sandbox_llm_scoring_active():
             github_block += f"\n{SANDBOX_LLM_SCORING_RULES}\n"
 
+    jd_structured = state.get("jd_structured") or {}
+    role_category = resolve_role_category(jd_structured)
+    code_role = role_category in (
+        "software_engineering",
+        "aiml",
+        "data_science",
+        "research_academic",
+    )
+    evidence_note = (
+        "Start with fetch_profiles on PROFILE_URLS (Exa). For code-heavy roles, "
+        "call get_github_repo_structures and run_sandbox_analysis when repos exist."
+        if agent_evidence_orchestration_active()
+        else "Call fetch_profiles on PROFILE_URLS, then submit_screening_result."
+    )
+    if agent_evidence_orchestration_active() and not code_role:
+        evidence_note = (
+            "Start with fetch_profiles on portfolio/design URLs (Exa). "
+            "GitHub and sandbox are optional — do not penalize missing code repos."
+        )
+
     return f"""Screen this candidate for the role below.
 
 APPLICATION_ID: {state.get("application_id")}
 JOB_ID: {state.get("job_id")}
+ROLE_CATEGORY: {role_category}
 PROFILE_URL_COUNT: {len(profile_urls)}
-SESSION_FETCH_BUDGET: {settings.max_urls_per_resume} unique URLs per session
+SESSION_FETCH_BUDGET: {settings.max_urls_per_resume} unique Exa fetches per session
+ENRICHED_URL_COUNT: {len(state.get("enriched_contents") or [])}
 
 {preamble}
 {cap_note}
@@ -417,8 +446,7 @@ REDACTED RESUME:
 {resume_text[:8000]}
 {github_block}
 URLs and trust tiers are in PROFILE_URLS and PROFILE_TRUST_BY_URL above.
-When agent evidence tools are enabled, call get_github_repo_structures and
-run_sandbox_analysis before submit_screening_result.
+{evidence_note}
 
 SUBMIT_PAYLOAD_SHAPE (fill with real scores/evidence; call submit_screening_result):
 {_build_submit_skeleton(rubric_compact)}
@@ -543,6 +571,9 @@ async def run_screening_agent_async(
             )
         except Exception as exc:
             logger.warning("Profile URL pre-enrichment failed: %s", exc)
+    from agent.tools.github_analyzer import sync_github_identity
+
+    sync_github_identity(state)
     register_prep_state(state)
     if sandbox_llm_scoring_active(settings) and sandbox_required_for_state(state, settings):
         await await_sandbox_for_scoring(state)

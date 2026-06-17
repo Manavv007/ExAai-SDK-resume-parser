@@ -56,12 +56,19 @@ def process_screening_submission(
             profile_url_meta=list(merged_state.get("profile_url_meta") or []),
             jd_structured=merged_state.get("jd_structured") or {},
             resume_structured=merged_state.get("resume_structured") or {},
+            discovered_github_repo_urls=list(merged_state.get("discovered_github_repo_urls") or []),
         )
     except (ValueError, TypeError) as exc:
         return {"ok": False, "errors": [str(exc)]}
 
     outcome = validate_result_detailed(normalized)
     if not outcome.ok:
+        import logging
+
+        logging.getLogger("exaai_adk.submit").warning(
+            "Screening submission validation failed: %s",
+            "; ".join(outcome.errors),
+        )
         return {"ok": False, "errors": outcome.errors}
 
     return {

@@ -379,6 +379,7 @@ async def test_agent_sanitizes_injection_before_submit(
 
 
 @pytest.mark.asyncio
+@patch("agent.prep.analyze_github_repos", return_value={})
 @patch("agent.pipeline.create_runner")
 @patch(
     "agent.enrichment.fetch_url_text_batch",
@@ -387,6 +388,7 @@ async def test_agent_sanitizes_injection_before_submit(
 async def test_agent_skips_untrusted_profile_fetch(
     mock_fetch,
     mock_create_runner,
+    mock_analyze_github,
     test_settings,
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,

@@ -16,6 +16,8 @@ ALLOWLIST_BY_CATEGORY: dict[str, tuple[str, ...]] = {
         "squarespace.com",
         "wixsite.com",
         "webflow.io",
+        "vercel.app",
+        "vercel.dev",
         "contra.com",
     ),
     "code": (

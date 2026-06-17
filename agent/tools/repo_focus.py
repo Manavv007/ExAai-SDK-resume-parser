@@ -105,7 +105,134 @@ ORTHOGONAL_REPO_TAGS = frozenset({"frontend_app"})
 BACKEND_CANDIDATE_TAGS = frozenset(
     {"backend_engineer", "fullstack_engineer", "general_software_engineer"}
 )
-AI_CANDIDATE_TAGS = frozenset({"ai_engineer", "ml_engineer"})
+AI_CANDIDATE_TAGS = frozenset({"ai_engineer", "ml_engineer", "data_engineer"})
+DATA_CANDIDATE_TAGS = frozenset({"data_engineer", "ai_engineer", "ml_engineer"})
+
+AI_JD_KEYWORDS = frozenset(
+    {
+        "rag",
+        "retrieval",
+        "embedding",
+        "embeddings",
+        "vector",
+        "llm",
+        "langchain",
+        "agent",
+        "gemini",
+        "openai",
+        "groq",
+        "pinecone",
+        "chromadb",
+        "transformer",
+        "nlp",
+        "huggingface",
+        "generative",
+        "prompt",
+    }
+)
+AI_REPO_TAGS = frozenset({"ai_agent_project", "rag_pipeline", "data_pipeline"})
+BACKEND_REPO_TAGS = frozenset({"backend_service", "fullstack_app", "sdk_or_library"})
+
+_AI_DEP_MARKERS = (
+    "langchain",
+    "pinecone",
+    "chromadb",
+    "weaviate",
+    "openai",
+    "groq",
+    "gemini",
+    "llama",
+    "huggingface",
+    "sentence-transformers",
+    "transformers",
+    "adk",
+)
+_RAG_PATH_MARKERS = (
+    "/rag",
+    "rag_",
+    "retriever",
+    "vector",
+    "embed",
+    "llm_",
+    "/llm",
+    "prompt",
+    "agent/",
+    "/agent",
+)
+
+
+def jd_keywords_from_structured(jd_structured: dict[str, Any] | None) -> set[str]:
+    """JD technology tokens for repo-role classification."""
+    from agent.tools.github_analyzer import get_jd_keywords
+
+    return get_jd_keywords(jd_structured)
+
+
+def infer_repo_type_tags_from_signals(
+    *,
+    file_paths: list[str] | None = None,
+    dependencies: set[str] | list[str] | str | None = None,
+    framework_markers: list[str] | None = None,
+    architecture_layers: list[str] | None = None,
+    project_shape: str = "",
+    base_tags: list[str] | None = None,
+) -> list[str]:
+    """Infer repo role tags from paths, deps, and sandbox/GitHub profiler signals."""
+    tags: set[str] = {str(tag).strip() for tag in (base_tags or []) if str(tag).strip()}
+    markers = {str(marker).strip().lower() for marker in (framework_markers or []) if marker}
+    paths = [str(path) for path in (file_paths or []) if path]
+    paths_blob = " ".join(paths).lower()
+    if isinstance(dependencies, str):
+        deps_blob = dependencies.lower()
+    else:
+        deps_blob = " ".join(str(dep).lower() for dep in (dependencies or []))
+
+    if project_shape == "monorepo":
+        tags.add("monorepo")
+    if {"react", "nextjs", "vite"} & markers:
+        tags.add("frontend_app")
+    if {"fastapi", "flask", "express"} & markers or any(
+        segment in paths_blob for segment in ("/api/", "/apis/", "/backend/", "/services/")
+    ):
+        tags.add("backend_service")
+    if "frontend_app" in tags and "backend_service" in tags:
+        tags.add("fullstack_app")
+    if "langchain" in markers or any(marker in deps_blob for marker in _AI_DEP_MARKERS):
+        tags.add("ai_agent_project")
+    layers = {str(layer).strip().lower() for layer in (architecture_layers or []) if layer}
+    if "guardrails" in layers:
+        tags.add("rag_pipeline")
+    if "pipeline" in layers and "data" in layers:
+        tags.add("data_pipeline")
+    if any(marker in paths_blob for marker in _RAG_PATH_MARKERS) or any(
+        marker in deps_blob for marker in ("rag", "pinecone", "chromadb", "embedding", "vector")
+    ):
+        tags.add("rag_pipeline")
+    if any(marker in paths_blob for marker in ("pipeline", "ingest", "chunk", "embed")):
+        tags.add("data_pipeline")
+    if any(marker in paths_blob for marker in ("terraform", "helm", "k8s", "pulumi")):
+        tags.add("infra_iac_repo")
+    if any(path.lower().endswith(("pyproject.toml", "setup.py", "cargo.toml", "go.mod")) for path in paths):
+        tags.add("sdk_or_library")
+    return sorted(tags)
+
+
+def _jd_wants_ai(jd_keywords: set[str], profile: set[str]) -> bool:
+    return bool(jd_keywords & AI_JD_KEYWORDS) or bool(profile & AI_CANDIDATE_TAGS)
+
+
+def _repo_signals_ai(
+    tags: set[str],
+    paths: list[str],
+    framework_markers: list[str] | None,
+) -> bool:
+    if tags & AI_REPO_TAGS:
+        return True
+    markers = {str(marker).strip().lower() for marker in (framework_markers or []) if marker}
+    if "langchain" in markers:
+        return True
+    paths_blob = " ".join(paths).lower()
+    return any(marker in paths_blob for marker in _RAG_PATH_MARKERS)
 
 
 def classify_repo_role(
@@ -113,37 +240,93 @@ def classify_repo_role(
     repo_type_tags: list[str] | None,
     candidate_tags: list[str] | None,
     file_paths: list[str] | None = None,
+    jd_keywords: set[str] | None = None,
+    framework_markers: list[str] | None = None,
 ) -> RepoRole:
-    """Classify how relevant a repo is to the candidate profile."""
+    """Classify how relevant a repo is to the candidate profile and JD."""
     tags = {str(tag).strip() for tag in (repo_type_tags or []) if str(tag).strip()}
     profile = {str(tag).strip() for tag in (candidate_tags or []) if str(tag).strip()}
     paths = [str(path) for path in (file_paths or []) if path]
+    jd = {str(keyword).strip().lower() for keyword in (jd_keywords or set()) if str(keyword).strip()}
 
     css_html_ratio = _css_html_ratio(paths)
     if css_html_ratio >= 0.65 and "backend_service" not in tags:
         return "orthogonal"
 
+    wants_ai = _jd_wants_ai(jd, profile)
+    repo_ai = _repo_signals_ai(tags, paths, framework_markers)
+
+    if wants_ai and repo_ai:
+        return "aligned"
     if profile & AI_CANDIDATE_TAGS:
-        if tags & {"ai_agent_project", "rag_pipeline", "data_pipeline"}:
+        if tags & AI_REPO_TAGS:
             return "aligned"
         if "automation_tool" in tags or any("n8n" in path.lower() for path in paths):
             return "adjacent"
+        if tags & BACKEND_REPO_TAGS and _repo_signals_ai(tags, paths, framework_markers):
+            return "adjacent"
 
-    if profile & BACKEND_CANDIDATE_TAGS:
-        if tags & {"backend_service", "fullstack_app", "sdk_or_library"}:
+    if profile & DATA_CANDIDATE_TAGS and tags & {"data_pipeline", "rag_pipeline"}:
+        return "aligned"
+
+    if profile & BACKEND_CANDIDATE_TAGS or bool(
+        jd & {"fastapi", "api", "rest", "backend", "python", "postgresql", "sql"}
+    ):
+        if tags & BACKEND_REPO_TAGS:
             return "aligned"
         if tags & {"frontend_app"} and "fullstack_app" not in tags:
             return "orthogonal"
         if tags & {"frontend_app", "fullstack_app"}:
             return "adjacent"
 
-    if tags & {"research_prototype", "portfolio_project"}:
-        return "peripheral"
-    if tags & {"backend_service", "fullstack_app", "ai_agent_project"}:
+    if tags & BACKEND_REPO_TAGS or tags & {"ai_agent_project"}:
         return "aligned"
+    if tags & {"research_prototype", "portfolio_project"} and not (tags & BACKEND_REPO_TAGS):
+        return "peripheral"
     if tags & {"frontend_app"}:
         return "adjacent"
+    if wants_ai and repo_ai:
+        return "adjacent"
     return "peripheral"
+
+
+def reconcile_sandbox_report_classification(
+    report: dict[str, Any],
+    *,
+    candidate_tags: list[str] | None,
+    jd_keywords: set[str] | None = None,
+    file_paths: list[str] | None = None,
+) -> str:
+    """Re-classify a sandbox report using profiler tags and JD-aware rules."""
+    profile = report.get("repo_profile") if isinstance(report.get("repo_profile"), dict) else {}
+    framework_markers = list(profile.get("framework_markers") or [])
+    architecture = profile.get("architecture") if isinstance(profile.get("architecture"), dict) else {}
+    layers = list(architecture.get("layers") or [])
+    paths = list(file_paths or [])
+    if not paths:
+        for item in profile.get("top_files") or []:
+            if isinstance(item, dict) and item.get("path"):
+                paths.append(str(item["path"]))
+
+    merged_tags = infer_repo_type_tags_from_signals(
+        file_paths=paths,
+        framework_markers=framework_markers,
+        architecture_layers=layers,
+        project_shape=str(profile.get("project_shape") or ""),
+        base_tags=list(profile.get("repo_type_tags") or []),
+    )
+    profile["repo_type_tags"] = merged_tags
+    role = classify_repo_role(
+        repo_type_tags=merged_tags,
+        candidate_tags=candidate_tags,
+        file_paths=paths,
+        jd_keywords=jd_keywords,
+        framework_markers=framework_markers,
+    )
+    profile["repo_role"] = role
+    report["repo_profile"] = profile
+    report["classification"] = role
+    return role
 
 
 def classify_content_quality(content: str) -> ContentStatus:
@@ -305,10 +488,12 @@ def validate_orchestrated_sandbox_repo_spec(
 
     expected = str(structure_classification or "").strip().lower()
     if cls and expected and cls != expected:
-        errors.append(
-            f"{repo_url}: classification '{cls}' does not match get_github_repo_structures "
-            f"result '{expected}' — do not invent classifications"
-        )
+        rank = {"orthogonal": 0, "peripheral": 1, "adjacent": 2, "aligned": 3}
+        if rank.get(cls, 0) > rank.get(expected, 0):
+            errors.append(
+                f"{repo_url}: classification '{cls}' does not match get_github_repo_structures "
+                f"result '{expected}' — do not invent classifications"
+            )
     return errors
 
 
@@ -512,12 +697,21 @@ def build_repo_structure_summary(
     languages: dict[str, Any] | None,
     repo_type_tags: list[str] | None,
     candidate_tags: list[str] | None,
+    jd_keywords: set[str] | None = None,
+    framework_markers: list[str] | None = None,
 ) -> dict[str, Any]:
     """Compact repo structure payload for the agent."""
+    enriched_tags = infer_repo_type_tags_from_signals(
+        file_paths=file_paths,
+        framework_markers=framework_markers,
+        base_tags=list(repo_type_tags or []),
+    )
     role = classify_repo_role(
-        repo_type_tags=repo_type_tags,
+        repo_type_tags=enriched_tags,
         candidate_tags=candidate_tags,
         file_paths=file_paths,
+        jd_keywords=jd_keywords,
+        framework_markers=framework_markers,
     )
     top_dirs = sorted(
         {path.split("/", 1)[0] for path in file_paths if "/" in path and not path.startswith(".")}
@@ -531,7 +725,7 @@ def build_repo_structure_summary(
         "repo_url": repo_url,
         "repo_name": repo_name,
         "classification": role,
-        "repo_type_tags": list(repo_type_tags or []),
+        "repo_type_tags": enriched_tags,
         "languages": languages or {},
         "top_level_dirs": top_dirs,
         "file_count": len(file_paths),

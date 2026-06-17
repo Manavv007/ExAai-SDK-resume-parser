@@ -140,6 +140,9 @@ def _build_portfolio_signal(
     resume_structured: dict[str, Any] | Any | None,
     profile_urls: list[str] | None,
     enriched_contents: list[dict[str, Any]] | None,
+    discovered_github_repo_urls: list[str] | None = None,
+    discovered_profile_urls: list[str] | None = None,
+    github_repo_analyses: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     try:
         urls = list(profile_urls or [])
@@ -149,11 +152,41 @@ def _build_portfolio_signal(
                 for item in enriched_contents
                 if isinstance(item, dict) and item.get("url")
             ]
+
+        # Repos discovered from portfolio hub pages (e.g. Google Docs / Notion
+        # that link to GitHub) must be merged into the URL list so that
+        # evaluate_portfolio_signal can find required platforms in them.
+        # Without this, a candidate who links to a portfolio doc instead of
+        # GitHub directly gets a false 15-point penalty.
+        discovered = list(discovered_github_repo_urls or [])
+        if discovered:
+            seen = {u.lower() for u in urls}
+            for repo_url in discovered:
+                if repo_url and repo_url.lower() not in seen:
+                    urls.append(repo_url)
+                    seen.add(repo_url.lower())
+
+        discovered_profiles = list(discovered_profile_urls or [])
+        if discovered_profiles:
+            seen = {u.lower() for u in urls}
+            for profile_url in discovered_profiles:
+                if profile_url and profile_url.lower() not in seen:
+                    urls.append(profile_url)
+                    seen.add(profile_url.lower())
+
+        resume_dict: dict[str, Any] | None = None
+        if isinstance(resume_structured, dict):
+            resume_dict = resume_structured
+        elif resume_structured is not None:
+            resume_dict = resume_structured.__dict__
+
         return evaluate_portfolio_signal(
             role_category=resolve_role_category(jd_structured),
             profile_urls=urls,
             enriched_contents=enriched_contents or [],
             experience_years=resolve_experience_years(resume_structured),
+            resume_structured=resume_dict,
+            github_repo_analyses=github_repo_analyses,
         )
     except Exception as exc:
         import logging
@@ -169,8 +202,9 @@ def _build_portfolio_signal(
             "penalty_points": 0,
             "penalty_applied": False,
             "penalty_reason": None,
-            "signal_strength": "not_applicable",
             "crawl_status_log": {},
+            "github_status_log": {},
+            "sandbox_status_log": {},
             "personal_portfolio_url": None,
         }
 
@@ -353,6 +387,8 @@ def normalize_screening_result(
     profile_url_meta: list[dict[str, Any]] | None = None,
     jd_structured: dict[str, Any] | Any | None = None,
     resume_structured: dict[str, Any] | Any | None = None,
+    discovered_github_repo_urls: list[str] | None = None,
+    discovered_profile_urls: list[str] | None = None,
 ) -> dict[str, Any]:
     """Map model output onto the platform contract and apply score caps."""
     settings = get_settings()
@@ -415,6 +451,9 @@ def normalize_screening_result(
         resume_structured=resume_structured,
         profile_urls=profile_urls,
         enriched_contents=enriched_contents,
+        discovered_github_repo_urls=discovered_github_repo_urls,
+        discovered_profile_urls=discovered_profile_urls,
+        github_repo_analyses=github_repo_analyses,
     )
     portfolio_penalty_applied = 0
     portfolio_hard_cap_applied = False
@@ -548,10 +587,14 @@ def normalize_screening_result(
 
     metadata = compact_metadata(metadata)
 
+    screening_status = raw.get("resume_screening_status")
+    if screening_status not in ("completed", "failed", "processing", "queued"):
+        screening_status = "completed"
+
     result = {
         "application_id": str(raw.get("application_id") or application_id),
         "job_id": str(raw.get("job_id") or job_id),
-        "resume_screening_status": raw.get("resume_screening_status") or "completed",
+        "resume_screening_status": screening_status,
         "resume_similarity_score": {"score": max(0, min(100, score)), "reasoning": reasoning},
         "requirement_matches": requirement_matches,
         "recommendation": recommendation,
@@ -565,7 +608,7 @@ def normalize_screening_result(
         ),
         "sources_crawled": sources,
         "metadata": metadata,
-        "errors": raw.get("errors") or [],
+        "errors": [],
     }
 
     attach_temp_sandbox_reports(result, github_repo_analyses)
@@ -577,9 +620,8 @@ def normalize_screening_result(
         if portfolio_penalty_applied > 0:
             breakdown_out["portfolio_penalty"] = portfolio_penalty_applied
         result["evaluation_breakdown"] = breakdown_out
-    elif portfolio_signal.get("penalty_applied") or portfolio_signal.get("signal_strength") not in (
-        None,
-        "not_applicable",
+    elif portfolio_signal.get("penalty_applied") or (
+        portfolio_signal.get("role_category") != "non_portfolio"
     ):
         result["evaluation_breakdown"] = {
             "jd_fit_score": jd_fit_for_breakdown if jd_fit_for_breakdown > 0 else score,
@@ -658,6 +700,8 @@ def score_screening(
     resume_structured: dict[str, Any] | Any | None = None,
     max_llm_attempts: int | None = None,
     compact_sandbox_prompt: bool = False,
+    discovered_github_repo_urls: list[str] | None = None,
+    discovered_profile_urls: list[str] | None = None,
 ) -> dict[str, Any]:
     """
     Run Gemini judge and return normalized resume-screening-result-v1 dict.
@@ -677,6 +721,9 @@ def score_screening(
         resume_structured=resume_structured,
         profile_urls=profile_urls,
         enriched_contents=enriched,
+        discovered_github_repo_urls=discovered_github_repo_urls,
+        discovered_profile_urls=discovered_profile_urls,
+        github_repo_analyses=github_repo_analyses,
     )
 
     prompt = _build_scoring_prompt(
@@ -713,6 +760,8 @@ def score_screening(
                 profile_url_meta=profile_url_meta,
                 jd_structured=jd_structured,
                 resume_structured=resume_structured,
+                discovered_github_repo_urls=discovered_github_repo_urls,
+                discovered_profile_urls=discovered_profile_urls,
             )
             outcome = validate_result_detailed(normalized)
             if outcome.ok:
@@ -770,4 +819,6 @@ def score_screening_from_state(
         resume_structured=state.get("resume_structured") or {},
         max_llm_attempts=max_llm_attempts,
         compact_sandbox_prompt=compact_sandbox_prompt,
+        discovered_github_repo_urls=list(state.get("discovered_github_repo_urls") or []),
+        discovered_profile_urls=list(state.get("discovered_profile_urls") or []),
     )

@@ -3,7 +3,11 @@ from pathlib import Path
 from agent.tools.link_extractor import (
     ExtractedLink,
     extract_links,
+    extract_urls_from_html,
+    extract_urls_from_text,
+    is_profile_discovery_url,
     normalize_url,
+    resolve_profile_url,
 )
 from agent.tools.parser import JdStructured, parse_jd_structured
 
@@ -111,3 +115,39 @@ def test_jd_domain_drives_inference(monkeypatch) -> None:
 def test_extracted_link_frozen() -> None:
     link = ExtractedLink(url="https://github.com/x", source="explicit")
     assert link.url == "https://github.com/x"
+
+
+def test_extract_urls_from_html_hrefs() -> None:
+    base = "https://manavbhavsar-portfolio.vercel.app/"
+    html = (
+        '<a href="https://github.com/Manavv007">GitHub</a>'
+        '<a href="/projects">Projects</a>'
+        '<script src="script.js"></script>'
+        '<img src="dev_avatar.jpg" />'
+        '<link href="https://fonts.googleapis.com/css2?family=Outfit" rel="stylesheet">'
+    )
+    urls = extract_urls_from_html(html, base_url=base, max_urls=20)
+    lowered = [u.lower() for u in urls]
+    assert "https://github.com/manavv007" in lowered
+    assert "https://manavbhavsar-portfolio.vercel.app/projects" in lowered
+    assert not any("script.js" in u and "vercel.app" not in u for u in urls)
+    assert not any(u.startswith("https://fonts.googleapis.com") for u in urls)
+
+
+def test_resolve_profile_url_rejects_fake_domains() -> None:
+    assert resolve_profile_url("script.js") is None
+    assert resolve_profile_url("dev_avatar.jpg") is None
+    assert (
+        resolve_profile_url("script.js", "https://manavbhavsar-portfolio.vercel.app/")
+        is None
+    )
+    assert is_profile_discovery_url(
+        "https://manavbhavsar-portfolio.vercel.app/script.js"
+    ) is False
+
+
+def test_extract_urls_from_text_still_works() -> None:
+    text = "See https://github.com/janedoe/portfolio-app and github.com/janedoe"
+    urls = extract_urls_from_text(text, max_urls=10)
+    joined = " ".join(urls).lower()
+    assert "github.com/janedoe" in joined

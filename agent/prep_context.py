@@ -72,6 +72,32 @@ def merge_github_repo_analyses(
         merged["sandbox_reports"] = session_reports
     elif prep_reports:
         merged["sandbox_reports"] = prep_reports
+
+    prep_discovered = (
+        prep_github.get("discovered_github_repo_urls")
+        if isinstance(prep_github, dict)
+        and isinstance(prep_github.get("discovered_github_repo_urls"), list)
+        else []
+    )
+    session_discovered = (
+        session_github.get("discovered_github_repo_urls")
+        if isinstance(session_github, dict)
+        and isinstance(session_github.get("discovered_github_repo_urls"), list)
+        else []
+    )
+    if session_discovered or prep_discovered:
+        seen: set[str] = set()
+        merged_discovered: list[str] = []
+        for raw in prep_discovered + session_discovered:
+            url = str(raw or "").strip()
+            if not url:
+                continue
+            lowered = url.lower()
+            if lowered in seen:
+                continue
+            seen.add(lowered)
+            merged_discovered.append(url)
+        merged["discovered_github_repo_urls"] = merged_discovered
     return merged
 
 

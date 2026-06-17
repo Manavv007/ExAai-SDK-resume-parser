@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
+import logging
+
+import httpx
+
 from agent.config import get_settings
+
+logger = logging.getLogger("exaai_adk.crawler")
 
 
 def fetch_url_text(url: str) -> str:
@@ -58,3 +64,19 @@ def fetch_url_text_batch(urls: list[str]) -> dict[str, str]:
     for url in urls:
         by_url.setdefault(url, "")
     return by_url
+
+
+def fetch_url_html_for_link_discovery(url: str, *, timeout: float = 15.0) -> str:
+    """Fetch raw HTML for outbound link discovery on already security-checked URLs.
+
+    Exa text extraction often drops ``href`` targets from JS-heavy portfolio sites.
+    Call only after SSRF + allowlist checks succeed for ``url``.
+    """
+    response = httpx.get(
+        url,
+        follow_redirects=True,
+        timeout=timeout,
+        headers={"User-Agent": "exaai-adk-link-discovery/1.0"},
+    )
+    response.raise_for_status()
+    return response.text

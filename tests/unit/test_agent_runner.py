@@ -17,10 +17,9 @@ def test_screening_instruction_references_trust_tiers() -> None:
     assert "scoring_untrusted" in lowered
     assert "submit_screening_result" in lowered
     assert "fetch_profiles" in lowered
-    assert "get_github_repo_structures" in lowered
-    assert "run_sandbox_analysis" in lowered
-    assert "1-5 focus_paths" in SCREENING_AGENT_INSTRUCTION
-    assert "copy" in lowered and "get_github_repo_structures" in SCREENING_AGENT_INSTRUCTION
+    assert "design" in lowered
+    assert "role_category" in lowered
+    assert "focus_paths" in lowered
 
 
 def test_build_agent_user_message_includes_screening_context() -> None:
@@ -62,6 +61,7 @@ def test_build_agent_user_message_includes_screening_context() -> None:
     message = build_agent_user_message(state)
 
     assert "11111111-1111-4111-8111-111111111111" in message
+    assert "ROLE_CATEGORY:" in message
     assert "Python engineer" in message
     assert "Senior Python Backend Engineer" in message
     assert "profile_trust_by_url" in message.lower() or "PROFILE_TRUST_BY_URL" in message

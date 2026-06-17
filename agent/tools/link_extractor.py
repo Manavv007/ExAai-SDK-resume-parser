@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from typing import Literal
-from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
+from urllib.parse import parse_qs, urlencode, urljoin, urlparse, urlunparse
 
 from agent.config import get_settings
 from agent.tools.parser import JdStructured
@@ -13,6 +13,10 @@ from agent.tools.parser import JdStructured
 LinkSource = Literal["explicit", "inferred"]
 
 _URL_PATTERN = re.compile(r"https?://[^\s\]>)\}\"']+", re.IGNORECASE)
+_HTML_ATTR_URL_PATTERN = re.compile(
+    r"""(?:href|src)\s*=\s*["']([^"']+)["']""",
+    re.IGNORECASE,
+)
 _BARE_DOMAIN_PATTERN = re.compile(
     r"(?i)\b((?:github|gitlab|linkedin)\.com/[\w\-./%]+|"
     r"(?:linkedin\.com/in/[\w\-]+)|(?:github\.com/[\w\-]+))"
@@ -93,6 +97,59 @@ class ExtractedLink:
 _NON_CRAWLABLE_PREFIXES = ("mailto:", "tel:", "sms:", "javascript:", "data:")
 _NON_CRAWLABLE_NETLOCS = frozenset({"mailto", "tel", "sms", "javascript", "data"})
 
+_STATIC_ASSET_EXTENSIONS = frozenset(
+    {
+        ".js",
+        ".css",
+        ".map",
+        ".jpg",
+        ".jpeg",
+        ".png",
+        ".gif",
+        ".webp",
+        ".svg",
+        ".ico",
+        ".woff",
+        ".woff2",
+        ".ttf",
+        ".eot",
+        ".mp4",
+        ".webm",
+        ".mp3",
+        ".wav",
+        ".zip",
+        ".gz",
+    }
+)
+
+_CDN_HOST_SUFFIXES = (
+    "fonts.googleapis.com",
+    "fonts.gstatic.com",
+    "cdnjs.cloudflare.com",
+    "ajax.googleapis.com",
+    "use.typekit.net",
+    "kit.fontawesome.com",
+)
+
+# Hosts that look like filenames (e.g. https://script.js) before base-URL resolution.
+_FAKE_HOST_RE = re.compile(
+    r"^(?:script|style|main|index|app|bundle|vendor|chunk|dev_avatar)(?:[.\-_].*)?$",
+    re.IGNORECASE,
+)
+_ASSET_NETLOC_SUFFIXES = (
+    ".js",
+    ".css",
+    ".map",
+    ".jpg",
+    ".jpeg",
+    ".png",
+    ".gif",
+    ".svg",
+    ".ico",
+    ".woff",
+    ".woff2",
+)
+
 
 def normalize_url(url: str) -> str | None:
     """Normalize URL: enforce https, strip tracking params, trim trailing punctuation."""
@@ -119,6 +176,19 @@ def normalize_url(url: str) -> str | None:
     ):
         return None
 
+    # Reject truncated Google Docs document URLs produced when a PDF parser
+    # splits a long URL across lines.  A valid document ID is exactly 44
+    # base64url characters; anything shorter is a broken fragment.
+    if "docs.google.com" in netloc and "/document/d/" in parsed.path:
+        path_parts = [p for p in parsed.path.split("/") if p]
+        # path_parts: ['document', 'd', '<id>', ...]
+        try:
+            doc_id = path_parts[path_parts.index("d") + 1]
+        except (ValueError, IndexError):
+            doc_id = ""
+        if len(doc_id) < 44:
+            return None
+
     query = parse_qs(parsed.query, keep_blank_values=False)
     filtered = {k: v for k, v in query.items() if k.lower() not in _TRACKING_PARAMS}
     new_query = urlencode(filtered, doseq=True)
@@ -137,6 +207,80 @@ def normalize_url(url: str) -> str | None:
             "",
         )
     )
+    return normalized
+
+
+def _host_looks_like_real_site(netloc: str) -> bool:
+    """Reject bare filenames mistaken for domains (e.g. script.js, dev_avatar.jpg)."""
+    host = netloc.lower().replace("www.", "")
+    if not host or host in {"localhost", "127.0.0.1"}:
+        return True
+    if any(host.endswith(suffix) for suffix in _ASSET_NETLOC_SUFFIXES):
+        return False
+    if _FAKE_HOST_RE.match(host.split(".")[0] if "." in host else host):
+        return False
+    labels = host.split(".")
+    if len(labels) < 2:
+        return False
+    tld = labels[-1]
+    if len(tld) < 2 or not tld.isalpha():
+        return False
+    return True
+
+
+def is_static_asset_url(url: str) -> bool:
+    """True for stylesheet/script/image/font URLs that are not profile pages."""
+    normalized = normalize_url(url)
+    if not normalized:
+        return True
+    path = urlparse(normalized).path.lower()
+    for ext in _STATIC_ASSET_EXTENSIONS:
+        if path.endswith(ext):
+            return True
+    return False
+
+
+def is_cdn_or_asset_host(url: str) -> bool:
+    normalized = normalize_url(url)
+    if not normalized:
+        return True
+    host = urlparse(normalized).netloc.lower().replace("www.", "")
+    if any(host == suffix or host.endswith(f".{suffix}") for suffix in _CDN_HOST_SUFFIXES):
+        return True
+    return not _host_looks_like_real_site(host)
+
+
+def is_profile_discovery_url(url: str) -> bool:
+    """True when a URL is worth keeping for profile discovery / Exa follow-up."""
+    normalized = normalize_url(url)
+    if not normalized:
+        return False
+    if is_static_asset_url(normalized):
+        return False
+    if is_cdn_or_asset_host(normalized):
+        return False
+    return True
+
+
+def resolve_profile_url(candidate: str, base_url: str | None = None) -> str | None:
+    """Normalize a link candidate, resolving relative paths against ``base_url``."""
+    cleaned = candidate.strip().rstrip(".,;)")
+    if not cleaned:
+        return None
+    lowered = cleaned.lower()
+    if lowered.startswith(_NON_CRAWLABLE_PREFIXES):
+        return None
+
+    resolved = cleaned
+    if base_url and not lowered.startswith(("http://", "https://")):
+        if lowered.startswith("//"):
+            resolved = f"https:{cleaned}"
+        else:
+            resolved = urljoin(base_url if base_url.endswith("/") else f"{base_url}/", cleaned)
+
+    normalized = normalize_url(resolved)
+    if not normalized or not is_profile_discovery_url(normalized):
+        return None
     return normalized
 
 
@@ -293,3 +437,88 @@ def _detect_resume_domain(text: str) -> str:
     if any(k in lowered for k in ("python", "kubernetes", "api", "backend", "git")):
         return "technical"
     return "general"
+
+
+def _append_normalized_urls(
+    urls: list[str],
+    seen: set[str],
+    candidates: list[str],
+    *,
+    max_urls: int,
+    base_url: str | None = None,
+) -> bool:
+    """Append unique normalized URLs. Returns True when the cap is reached."""
+    for candidate in candidates:
+        if base_url:
+            normalized = resolve_profile_url(candidate, base_url)
+        else:
+            normalized = normalize_url(candidate)
+            if normalized and not is_profile_discovery_url(normalized):
+                normalized = None
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        urls.append(normalized)
+        if len(urls) >= max_urls:
+            return True
+    return False
+
+
+def extract_urls_from_text(text: str, *, max_urls: int = 50) -> list[str]:
+    """Extract normalized URLs from arbitrary text blocks (e.g., portfolio pages)."""
+    if not text:
+        return []
+    seen: set[str] = set()
+    urls: list[str] = []
+    for pattern in (_URL_PATTERN, _BARE_DOMAIN_PATTERN):
+        for match in pattern.finditer(text):
+            candidate = match.group(0).rstrip("=.,;)>")
+            if _append_normalized_urls(urls, seen, [candidate], max_urls=max_urls):
+                return urls
+    return urls
+
+
+def extract_urls_from_html(
+    html: str,
+    *,
+    base_url: str | None = None,
+    max_urls: int = 50,
+) -> list[str]:
+    """Extract normalized URLs from raw HTML (href/src attributes and inline URLs).
+
+    Used when Exa text extraction omits hyperlinks from JS-rendered portfolio sites.
+    Relative ``href``/``src`` values are resolved against ``base_url`` when provided.
+    """
+    if not html:
+        return []
+    seen: set[str] = set()
+    urls: list[str] = []
+    attr_candidates = [match.group(1) for match in _HTML_ATTR_URL_PATTERN.finditer(html)]
+    if _append_normalized_urls(
+        urls, seen, attr_candidates, max_urls=max_urls, base_url=base_url
+    ):
+        return urls
+    for pattern in (_URL_PATTERN, _BARE_DOMAIN_PATTERN):
+        for match in pattern.finditer(html):
+            candidate = match.group(0).rstrip("=.,;)>")
+            if _append_normalized_urls(
+                urls, seen, [candidate], max_urls=max_urls, base_url=base_url
+            ):
+                return urls
+    return urls
+
+
+def merge_url_candidates(*candidate_lists: list[str]) -> list[str]:
+    """Merge URL candidate lists preserving first-seen order."""
+    merged: list[str] = []
+    seen: set[str] = set()
+    for candidates in candidate_lists:
+        for candidate in candidates:
+            normalized = normalize_url(candidate)
+            if not normalized or not is_profile_discovery_url(normalized):
+                continue
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            merged.append(normalized)
+    return merged

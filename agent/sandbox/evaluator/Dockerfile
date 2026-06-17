@@ -46,9 +46,9 @@ ENV PYTHONUNBUFFERED=1
 ENV PYTHONPATH=/app
 
 COPY agent/__init__.py /app/agent/__init__.py
-COPY agent/config.py /app/agent/config.py
+COPY agent/gcp_credentials.py /app/agent/gcp_credentials.py
 COPY agent/sandbox /app/agent/sandbox
-# Avoid importing cloud_run_provider/config bootstrap (needs api-only modules).
+# Evaluator uses ADC for GCS report upload; do not copy agent.config (pulls llm_client).
 RUN printf '%s\n' '"""Sandbox evaluator image package stub."""' > /app/agent/sandbox/__init__.py
 # Evaluator imports agent.tools.repo_focus (top_files, risk_only, file sampling).
 RUN mkdir -p /app/agent/tools

@@ -103,3 +103,35 @@ def test_report_store_gcs_round_trip() -> None:
     assert loaded.repo == "owner/project"
     blob = client.buckets["reports-bucket"].blobs["sandbox-reports/owner-project/run-1.json"]
     assert blob.content_type == "application/json"
+
+
+def test_report_store_resolve_gcs_credentials_adc_without_api_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Evaluator image has no agent.config / llm_client; GCS upload must use ADC."""
+    import builtins
+
+    real_import = builtins.__import__
+
+    def blocked_import(name: str, *args: object, **kwargs: object):
+        if name == "agent.config" or name.startswith("agent.config."):
+            raise ModuleNotFoundError(name)
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", blocked_import)
+    monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
+    monkeypatch.delenv("SANDBOX_GOOGLE_APPLICATION_CREDENTIALS", raising=False)
+
+    calls: list[str] = []
+
+    def fake_load(*, settings_path: str = ""):
+        calls.append(settings_path)
+        return object()
+
+    monkeypatch.setattr("agent.gcp_credentials.load_gcp_credentials", fake_load)
+
+    store = SandboxReportStore()
+    credentials = store._resolve_gcs_credentials()
+
+    assert credentials is not None
+    assert calls == [""]

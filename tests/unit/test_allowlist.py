@@ -10,6 +10,8 @@ from agent.security.allowlist import check_allowlist, get_domain_category, is_al
         ("https://www.linkedin.com/in/janedoe", "professional"),
         ("https://medium.com/@janedoe", "writing"),
         ("https://behance.net/gallery/123", "portfolio"),
+        ("https://manavbhavsar.vercel.app/", "portfolio"),
+        ("https://my-portfolio.vercel.dev/", "portfolio"),
         ("https://scholar.google.com/citations?user=abc", "academic"),
         ("https://user.github.io/portfolio", "code"),
     ],

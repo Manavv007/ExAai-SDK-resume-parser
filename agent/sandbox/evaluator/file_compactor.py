@@ -55,26 +55,36 @@ def strip_noise_lines(content: str, path: str) -> str:
     return "\n".join(kept)
 
 
+def _docstring_line_numbers(node: ast.AST) -> set[int]:
+    """Line numbers occupied by a leading docstring on a module/class/function."""
+    if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Module)):
+        return set()
+    body = getattr(node, "body", None)
+    if not body:
+        return set()
+    first = body[0]
+    if not isinstance(first, ast.Expr):
+        return set()
+    value = getattr(first, "value", None)
+    if not isinstance(value, ast.Constant) or not isinstance(value.value, str):
+        return set()
+    # ast.Module has no lineno in Python 3.9+; use the docstring Expr span.
+    start = getattr(first, "lineno", None)
+    if start is None:
+        return set()
+    end = getattr(first, "end_lineno", None) or start
+    return set(range(start, end + 1))
+
+
 def _strip_python_noise(content: str) -> str:
     try:
-        import ast
-
         tree = ast.parse(content)
     except SyntaxError:
         return "\n".join(line for line in content.splitlines() if not _COMMENT_LINE.match(line))
 
     docstring_lines: set[int] = set()
     for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Module)):
-            if (
-                node.body
-                and isinstance(node.body[0], ast.Expr)
-                and isinstance(getattr(node.body[0], "value", None), ast.Constant)
-                and isinstance(node.body[0].value.value, str)
-            ):
-                end = getattr(node.body[0], "end_lineno", node.body[0].lineno)
-                for line_no in range(node.lineno, (end or node.lineno) + 1):
-                    docstring_lines.add(line_no)
+        docstring_lines.update(_docstring_line_numbers(node))
 
     kept: list[str] = []
     for index, line in enumerate(content.splitlines(), start=1):
@@ -100,7 +110,10 @@ def extract_python_skeleton(content: str) -> str:
     for node in tree.body:
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             continue
-        start = node.lineno - 1
+        lineno = getattr(node, "lineno", None)
+        if lineno is None:
+            continue
+        start = lineno - 1
         if start in seen_lines:
             continue
         seen_lines.add(start)

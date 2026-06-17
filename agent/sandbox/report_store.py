@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import uuid
 from dataclasses import dataclass
@@ -88,14 +89,28 @@ class SandboxReportStore:
             from google.cloud import storage
         except ImportError as exc:  # pragma: no cover - dependency is declared for runtime
             raise RuntimeError("google-cloud-storage is required for gs:// report storage") from exc
-        from agent.config import get_settings
-        from agent.gcp_credentials import load_sandbox_gcp_credentials
+        credentials = self._resolve_gcs_credentials()
+        if self.project_id:
+            return storage.Client(project=self.project_id, credentials=credentials)
+        return storage.Client(credentials=credentials)
 
-        settings = get_settings()
+    def _resolve_gcs_credentials(self) -> Any:
+        """Resolve GCS credentials without requiring the full API app package."""
+        from agent.gcp_credentials import load_gcp_credentials
+
         if self.credentials_path.strip():
-            from agent.gcp_credentials import load_gcp_credentials
+            return load_gcp_credentials(settings_path=self.credentials_path)
 
-            credentials = load_gcp_credentials(settings_path=self.credentials_path)
-        else:
-            credentials = load_sandbox_gcp_credentials(settings)
-        return storage.Client(project=self.project_id, credentials=credentials)
+        for env_key in ("SANDBOX_GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_APPLICATION_CREDENTIALS"):
+            env_path = (os.environ.get(env_key) or "").strip()
+            if env_path:
+                return load_gcp_credentials(settings_path=env_path)
+
+        try:
+            from agent.config import get_settings
+            from agent.gcp_credentials import load_sandbox_gcp_credentials
+
+            return load_sandbox_gcp_credentials(get_settings())
+        except (ImportError, ModuleNotFoundError):
+            # Cloud Run evaluator image ships a minimal agent package; use ADC.
+            return load_gcp_credentials(settings_path="")
