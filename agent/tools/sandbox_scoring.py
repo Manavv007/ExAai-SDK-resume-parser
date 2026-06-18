@@ -67,31 +67,31 @@ def repo_sandbox_risk_penalty(report: dict[str, Any]) -> int:
     findings = report.get("findings") if isinstance(report.get("findings"), list) else []
 
     if security.get("secret_hygiene") == "weak":
-        penalty += 10
+        penalty += 4
 
     secret_hits = _int_or_none(security.get("secret_pattern_hits"))
     if secret_hits is None:
         secret_hits = _int_or_none(profile.get("secret_pattern_hits"))
     if secret_hits and secret_hits > 0:
-        penalty += min(15, secret_hits * 3)
+        penalty += min(6, secret_hits * 2)
 
     vuln_total = _vulnerability_total(report)
     if vuln_total >= 100:
-        penalty += 30
+        penalty += 8
     elif vuln_total >= 50:
-        penalty += 20
+        penalty += 5
     elif vuln_total >= 20:
-        penalty += 12
+        penalty += 3
     elif vuln_total >= 5:
-        penalty += 6
+        penalty += 2
 
     high_findings = sum(
         1 for item in findings if isinstance(item, dict) and item.get("severity") == "high"
     )
-    penalty += high_findings * 6
+    penalty += high_findings * 2
 
     weighted = int(round(penalty * weight))
-    per_repo_cap = 35 if weight >= 0.6 else 20
+    per_repo_cap = 12 if weight >= 0.6 else 8
     return min(weighted, per_repo_cap)
 
 
@@ -118,18 +118,18 @@ def repo_sandbox_score_ceiling(report: dict[str, Any]) -> int | None:
 
     if role == "aligned":
         if vuln_total >= 100 or (weak_secrets and vuln_total >= 20):
-            return 65
+            return 85
         if vuln_total >= 50:
-            return 68
+            return 88
         if vuln_total >= 20:
-            return 72
+            return 90
         if high_findings >= 1 and weak_secrets:
-            return 68
+            return 88
     elif role == "adjacent":
         if vuln_total >= 100:
-            return 68
+            return 88
         if vuln_total >= 50:
-            return 72
+            return 90
 
     return None
 
@@ -143,7 +143,7 @@ def compute_sandbox_score_penalty(sandbox_reports: list[dict[str, Any]]) -> int:
 
     worst = max(penalties)
     average = sum(penalties) / len(penalties)
-    return max(0, min(40, int(round((0.7 * worst) + (0.3 * average)))))
+    return max(0, min(15, int(round((0.7 * worst) + (0.3 * average)))))
 
 
 def compute_sandbox_score_ceiling(sandbox_reports: list[dict[str, Any]]) -> int | None:

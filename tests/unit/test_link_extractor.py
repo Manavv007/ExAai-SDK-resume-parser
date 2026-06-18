@@ -144,6 +144,10 @@ def test_resolve_profile_url_rejects_fake_domains() -> None:
     assert is_profile_discovery_url(
         "https://manavbhavsar-portfolio.vercel.app/script.js"
     ) is False
+    assert is_profile_discovery_url("https://www.behance.net/manifest.json") is False
+    assert is_profile_discovery_url("https://cdn.behance.net/") is False
+    assert is_profile_discovery_url("https://mir-s3-cdn-cf.behance.net") is False
+    assert is_profile_discovery_url("https://feeds.feedburner.com/behance/vorr") is False
 
 
 def test_extract_urls_from_text_still_works() -> None:

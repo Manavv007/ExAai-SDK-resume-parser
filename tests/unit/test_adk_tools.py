@@ -610,3 +610,18 @@ def test_submit_screening_result_includes_temp_sandbox_reports() -> None:
 
     assert outcome["ok"] is True
     assert outcome["screening_result"]["temp_sandbox_reports"] == sandbox_reports
+
+
+def test_github_repo_urls_from_state_falls_back_to_profile_urls() -> None:
+    from agent.adk_tools import _github_repo_urls_from_state
+
+    repos = [
+        "https://github.com/candidate/project-a",
+        "https://github.com/candidate/project-b",
+        "https://github.com/candidate/project-c",
+    ]
+    state = {
+        "profile_urls": repos + ["https://candidate.dev"],
+        "github_repo_analyses": {},
+    }
+    assert _github_repo_urls_from_state(state) == repos

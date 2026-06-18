@@ -432,7 +432,9 @@ def normalize_screening_result(
     score, score_source = resolve_score_from_evaluation_breakdown(score, evaluation_breakdown)
 
     score = enforce_must_have_score_cap(score, requirement_matches, rubric)
-    if profile_identity_cap_score:
+    # When sandbox composite is active, repo metrics already ground the score; do not
+    # restore rubric/LLM derived_score (regression guard for resume-only scoring).
+    if profile_identity_cap_score and score_source != "evaluation_composite":
         capped = apply_identity_score_cap(score)
         if derived_score >= MUST_HAVE_PASS_THRESHOLD:
             score = max(derived_score, capped)

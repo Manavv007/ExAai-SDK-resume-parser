@@ -24,6 +24,7 @@ from agent.tools.github_analyzer import (
     _evaluate_sandbox_repos,
     _repo_name_from_url,
     align_sandbox_reports_with_urls,
+    extract_github_repo_urls,
     merge_github_repo_urls,
     normalize_github_repo_url,
     resolve_github_username,
@@ -670,18 +671,20 @@ async def execute_sandbox_analysis_for_state(
 
 
 def _github_repo_urls_from_state(state: dict[str, Any]) -> list[str]:
+    urls: list[str] = []
     github = state.get("github_repo_analyses")
-    if not isinstance(github, dict):
-        return []
-    urls = list(
-        github.get("selected_sandbox_repo_urls") or github.get("resume_github_repo_urls") or []
-    )
-    if not urls:
-        for item in github.get("repo_analyses") or []:
-            if isinstance(item, dict) and item.get("url"):
-                urls.append(str(item["url"]))
-    urls.extend(list(github.get("discovered_github_repo_urls") or []))
+    if isinstance(github, dict):
+        urls = list(
+            github.get("selected_sandbox_repo_urls") or github.get("resume_github_repo_urls") or []
+        )
+        if not urls:
+            for item in github.get("repo_analyses") or []:
+                if isinstance(item, dict) and item.get("url"):
+                    urls.append(str(item["url"]))
+        urls.extend(list(github.get("discovered_github_repo_urls") or []))
     urls.extend(list(state.get("discovered_github_repo_urls") or []))
+    if not urls:
+        urls = extract_github_repo_urls(list(state.get("profile_urls") or []))
     return merge_github_repo_urls(urls)
 
 

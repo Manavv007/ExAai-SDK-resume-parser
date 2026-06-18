@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from typing import Any
+from urllib.parse import urlparse
 
 from agent.cache.url_cache import UrlCache
 from agent.config import get_settings
@@ -487,9 +488,41 @@ def build_fetch_profiles_tool_payload(
     return payload
 
 
+def _profile_identity_key(url: str) -> tuple[str, str] | None:
+    normalized = normalize_url(url)
+    if not normalized:
+        return None
+    parsed = urlparse(normalized)
+    return parsed.netloc.lower(), parsed.path.rstrip("/").lower()
+
+
+def _enriched_profile_keys(state: dict[str, Any]) -> set[tuple[str, str]]:
+    keys: set[tuple[str, str]] = set()
+    for entry in state.get("enriched_contents") or []:
+        if not isinstance(entry, dict):
+            continue
+        key = _profile_identity_key(str(entry.get("url") or ""))
+        if key:
+            keys.add(key)
+    return keys
+
+
 def _filter_profile_discovery_urls(urls: list[str]) -> list[str]:
     """Drop CDN/static asset noise before merging discovered profile URLs."""
     return [url for url in urls if is_profile_discovery_url(url)]
+
+
+def _url_matches_priority_marker(url: str, marker: str) -> bool:
+    """Match LinkedIn paths or registrable domains without CDN false positives."""
+    normalized = normalize_url(url)
+    if not normalized:
+        return False
+    lowered = normalized.lower()
+    if "/" in marker:
+        return marker in lowered
+    parsed = urlparse(normalized)
+    host = parsed.netloc.lower().removeprefix("www.")
+    return host == marker or host.endswith(f".{marker}")
 
 
 def _high_value_follow_up_urls(urls: list[str], *, limit: int = 3) -> list[str]:
@@ -516,17 +549,11 @@ def _high_value_follow_up_urls(urls: list[str], *, limit: int = 3) -> list[str]:
         ranked.append(url)
 
     for url in urls:
-        lowered = url.lower()
         if normalize_github_profile_url(url):
             add(url)
             continue
-        if any(marker in lowered for marker in priority_hosts):
+        if any(_url_matches_priority_marker(url, marker) for marker in priority_hosts):
             add(url)
-
-    for url in urls:
-        if len(ranked) >= limit:
-            break
-        add(url)
 
     return ranked[:limit]
 
@@ -547,6 +574,15 @@ async def _run_discovered_link_pass(
         source_entries=source_entries,
     )
     await ensure_github_analysis_after_discovery(state)
+    if not discovered_non_github:
+        return [], [], meta
+
+    enriched_keys = _enriched_profile_keys(state)
+    discovered_non_github = [
+        url
+        for url in discovered_non_github
+        if _profile_identity_key(url) not in enriched_keys
+    ]
     if not discovered_non_github:
         return [], [], meta
 

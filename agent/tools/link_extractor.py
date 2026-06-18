@@ -119,7 +119,18 @@ _STATIC_ASSET_EXTENSIONS = frozenset(
         ".wav",
         ".zip",
         ".gz",
+        ".json",
     }
+)
+
+_CDN_SUBDOMAIN_MARKERS = (
+    "cdn.",
+    "-cdn-",
+    "-cf.",
+    "static.",
+    "assets.",
+    "s3-",
+    "mir-",
 )
 
 _CDN_HOST_SUFFIXES = (
@@ -129,6 +140,14 @@ _CDN_HOST_SUFFIXES = (
     "ajax.googleapis.com",
     "use.typekit.net",
     "kit.fontawesome.com",
+)
+
+_NON_PROFILE_HOST_SUFFIXES = (
+    "feedburner.com",
+    "evidon.com",
+    "doubleclick.net",
+    "googletagmanager.com",
+    "google-analytics.com",
 )
 
 # Hosts that look like filenames (e.g. https://script.js) before base-URL resolution.
@@ -245,6 +264,10 @@ def is_cdn_or_asset_host(url: str) -> bool:
     if not normalized:
         return True
     host = urlparse(normalized).netloc.lower().replace("www.", "")
+    if any(host == suffix or host.endswith(f".{suffix}") for suffix in _NON_PROFILE_HOST_SUFFIXES):
+        return True
+    if any(marker in host for marker in _CDN_SUBDOMAIN_MARKERS):
+        return True
     if any(host == suffix or host.endswith(f".{suffix}") for suffix in _CDN_HOST_SUFFIXES):
         return True
     return not _host_looks_like_real_site(host)

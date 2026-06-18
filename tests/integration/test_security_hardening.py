@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -379,7 +379,7 @@ async def test_agent_sanitizes_injection_before_submit(
 
 
 @pytest.mark.asyncio
-@patch("agent.prep.analyze_github_repos", return_value={})
+@patch("agent.tools.github_analyzer.analyze_github_repos", new_callable=AsyncMock, return_value={})
 @patch("agent.pipeline.create_runner")
 @patch(
     "agent.enrichment.fetch_url_text_batch",

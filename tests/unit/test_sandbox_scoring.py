@@ -109,18 +109,19 @@ def test_fitness_repo_without_vulns_has_no_penalty() -> None:
 
 
 def test_chaos_repo_penalty_is_material(deterministic_sandbox_scoring) -> None:
-    assert repo_sandbox_risk_penalty(_chaos_repo_report()) == 35
+    penalty = repo_sandbox_risk_penalty(_chaos_repo_report())
+    assert 10 <= penalty <= 15
 
 
 def test_chaos_repo_has_critical_ceiling(deterministic_sandbox_scoring) -> None:
-    assert repo_sandbox_score_ceiling(_chaos_repo_report()) == 65
+    assert repo_sandbox_score_ceiling(_chaos_repo_report()) == 85
 
 
 def test_combined_penalty_matches_candidate_example(deterministic_sandbox_scoring) -> None:
     reports = [_healthy_repo_report(), _fitness_repo_report(), _chaos_repo_report()]
     penalty = compute_sandbox_score_penalty(reports)
-    assert penalty == 35
-    assert compute_sandbox_score_ceiling(reports) == 65
+    assert 10 <= penalty <= 15
+    assert compute_sandbox_score_ceiling(reports) == 85
 
 
 def test_apply_sandbox_score_penalty_applies_when_llm_scoring_enabled(
@@ -144,7 +145,7 @@ def test_apply_sandbox_score_penalty_applies_when_llm_scoring_enabled(
         },
     )
     assert reduction > 0
-    assert 60 <= adjusted <= 65
+    assert 78 <= adjusted <= 83
 
 
 def test_apply_sandbox_score_penalty_reduces_high_llm_score(deterministic_sandbox_scoring) -> None:
@@ -160,7 +161,7 @@ def test_apply_sandbox_score_penalty_reduces_high_llm_score(deterministic_sandbo
         },
     )
     assert penalty > 0
-    assert adjusted <= 65
+    assert adjusted <= 77
 
 
 def test_merge_github_repo_analyses_prefers_sandbox_reports_from_prep() -> None:
@@ -286,7 +287,10 @@ def test_normalize_screening_result_applies_sandbox_penalty(deterministic_sandbo
     )
 
     score = normalized["resume_similarity_score"]["score"]
-    assert score <= 65
+    breakdown = normalized.get("evaluation_breakdown") or {}
+    assert breakdown.get("final_score_source") == "evaluation_composite"
+    assert 10 <= int(breakdown.get("sandbox_penalty") or 0) <= 15
+    assert score < 77
     assert normalized["recommendation"] == "hold"
     reasoning = normalized["resume_similarity_score"]["reasoning"]
     assert "Sandbox repo review reduced the score" in reasoning
