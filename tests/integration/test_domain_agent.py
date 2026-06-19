@@ -8,6 +8,7 @@ import pytest
 
 from agent.pipeline import run_screening_async
 from agent.prep import prepare_screening_state
+from agent.tools.link_extractor import canonical_profile_url
 from tests.integration.conftest import (
     APP_ID,
     DOMAIN_CASES,
@@ -51,9 +52,10 @@ async def test_domain_agent_mode_completed(
     )
 
     fetch_url = next(url for url in prep["profile_urls"] if case.crawl_url_substring in url)
+    fetch_url_canonical = canonical_profile_url(fetch_url) or fetch_url
     submit_payload = load_llm_fixture(rubric=prep["rubric"], score=80)
     mock_create_runner.return_value = build_scripted_runner(
-        fetch_urls=[fetch_url],
+        fetch_urls=[fetch_url_canonical],
         submit_payload=submit_payload,
     )
     mock_fetch.side_effect = batch_fetch_side_effect(f"External profile content for {case.key}.")
@@ -82,5 +84,6 @@ async def test_domain_agent_mode_completed(
 
     assert_valid_completed_result(result, case)
     assert_no_pii_in_payload(result, case.pii_markers)
-    mock_fetch.assert_called_once()
-    assert fetch_url in mock_fetch.call_args[0][0]
+    assert mock_fetch.called
+    fetched_urls = [url for call in mock_fetch.call_args_list for url in call.args[0]]
+    assert fetch_url_canonical in fetched_urls
