@@ -17,12 +17,16 @@ from agent.tools.github_analyzer import (
     _select_sandbox_repo_urls,
     _select_static_repos,
     analyze_github_repos,
+    extract_github_owner_from_repo_url,
+    extract_github_owners_from_repo_urls,
     extract_github_repo_urls,
     extract_github_username,
     merge_github_repo_urls,
     normalize_github_profile_url,
     normalize_github_repo_url,
     resolve_github_username,
+    resolve_github_username_from_repos,
+    resolve_github_username_with_source,
     sync_github_identity,
 )
 from agent.tools.github_client import RepoMeta
@@ -73,6 +77,72 @@ def test_normalize_github_profile_url() -> None:
     assert normalize_github_profile_url("https://github.com/topics/python") is None
 
 
+def test_extract_github_owner_from_repo_url() -> None:
+    assert extract_github_owner_from_repo_url("https://github.com/Manavv007/exaai-adk") == "Manavv007"
+    assert extract_github_owner_from_repo_url("https://github.com/Manavv007") is None
+    assert extract_github_owner_from_repo_url("https://github.com/topics/python") is None
+    assert (
+        extract_github_owner_from_repo_url("https://github.com/Manavv007/repo/tree/main/src")
+        == "Manavv007"
+    )
+
+
+def test_extract_github_owners_from_repo_urls_dedupes() -> None:
+    urls = [
+        "https://github.com/alice/one",
+        "https://github.com/Alice/two",
+        "https://github.com/bob/other",
+    ]
+    assert extract_github_owners_from_repo_urls(urls) == ["alice", "bob"]
+
+
+def test_resolve_github_username_from_repos_unanimous() -> None:
+    urls = [
+        "https://github.com/manavv007/repo-a",
+        "https://github.com/manavv007/repo-b",
+    ]
+    assert resolve_github_username_from_repos(urls) == "manavv007"
+
+
+def test_resolve_github_username_from_repos_dominant_owner() -> None:
+    urls = [
+        "https://github.com/alice/r1",
+        "https://github.com/alice/r2",
+        "https://github.com/alice/r3",
+        "https://github.com/alice/r4",
+        "https://github.com/bob/shared",
+    ]
+    assert resolve_github_username_from_repos(urls) == "alice"
+
+
+def test_resolve_github_username_from_repos_ambiguous() -> None:
+    urls = [
+        "https://github.com/alice/r1",
+        "https://github.com/bob/r2",
+    ]
+    assert resolve_github_username_from_repos(urls) is None
+
+
+def test_resolve_github_username_from_repos_uses_owner_hint() -> None:
+    urls = [
+        "https://github.com/org/repo",
+        "https://github.com/alice/personal",
+    ]
+    assert resolve_github_username_from_repos(urls, owner_hint="alice") == "alice"
+
+
+def test_resolve_github_username_with_source_profile_before_repos() -> None:
+    state = {
+        "profile_urls": [
+            "https://github.com/profile-user",
+            "https://github.com/repo-only-user/some-repo",
+        ],
+    }
+    username, source = resolve_github_username_with_source(state)
+    assert username == "profile-user"
+    assert source == "profile_url"
+
+
 def test_resolve_github_username_from_discovered_repo_urls() -> None:
     state = {
         "profile_urls": ["https://manavbhavsar-portfolio.vercel.app/"],
@@ -82,6 +152,16 @@ def test_resolve_github_username_from_discovered_repo_urls() -> None:
         ],
     }
     assert resolve_github_username(state) == "manavv007"
+    _username, source = resolve_github_username_with_source(state)
+    assert source == "repo_urls"
+
+
+def test_extract_github_username_from_repo_urls_only() -> None:
+    urls = [
+        "https://github.com/janedoe/project-a",
+        "https://github.com/janedoe/project-b",
+    ]
+    assert extract_github_username(urls) == "janedoe"
 
 
 def test_sync_github_identity_sets_username_and_analysis_shell() -> None:

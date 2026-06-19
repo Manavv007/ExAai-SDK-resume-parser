@@ -174,8 +174,10 @@ def scripted_agent_callback(
     *,
     fetch_urls: list[str],
     submit_payload: dict[str, Any],
+    role_category: str = "software_engineering",
+    role_reasoning: str = "Role requires verifiable code portfolio.",
 ):
-    """Mock Gemini: fetch_profiles → submit_screening_result (no list step)."""
+    """Mock Gemini: classify_portfolio_role → fetch_profiles → submit_screening_result."""
 
     turn = 0
 
@@ -184,11 +186,20 @@ def scripted_agent_callback(
         turn += 1
         if turn == 1:
             return agent_function_call_response(
+                call_id="call-classify",
+                name="classify_portfolio_role",
+                args={
+                    "role_category": role_category,
+                    "reasoning": role_reasoning,
+                },
+            )
+        if turn == 2:
+            return agent_function_call_response(
                 call_id="call-fetch",
                 name="fetch_profiles",
                 args={"urls": fetch_urls},
             )
-        if turn == 2:
+        if turn == 3:
             return agent_function_call_response(
                 call_id="call-submit",
                 name="submit_screening_result",

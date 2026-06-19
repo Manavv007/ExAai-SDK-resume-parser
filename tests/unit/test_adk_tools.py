@@ -6,12 +6,15 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from agent.adk_tools import (
+    analyze_github,
+    classify_portfolio_role,
     fetch_profile_content,
     fetch_profiles,
     list_candidate_profile_urls,
     submit_screening_result,
 )
 from agent.enrichment import plan_batch_profile_fetches
+from agent.prep_context import clear_prep_state, register_prep_state
 from agent.submit import process_screening_submission
 from agent.tools.validator import validate_result
 
@@ -84,6 +87,85 @@ def test_fetch_profiles_agent_controlled_discovery_does_not_auto_follow(
     assert result.get("fetch_budget_remaining") == 9
 
 
+@patch("agent.enrichment.fetch_url_text_batch")
+def test_fetch_profiles_discovery_only_skips_follow_up_exa(mock_fetch_batch, test_settings) -> None:
+    portfolio = "https://janedoe.dev/portfolio"
+    linkedin = "https://linkedin.com/in/janedoe"
+    discovered_repo = "https://github.com/janedoe/portfolio-app"
+
+    mock_fetch_batch.return_value = {
+        portfolio: (
+            "===BEGIN EXTERNAL CONTENT: https://janedoe.dev/portfolio===\n"
+            f"Contact: {linkedin} code: {discovered_repo}\n"
+            + ("portfolio links " * 20)
+            + "\n===END EXTERNAL CONTENT==="
+        )
+    }
+
+    ctx = MagicMock()
+    ctx.state = _FakeState(
+        profile_urls=[portfolio],
+        resume_profile_urls=[portfolio],
+        profile_trust_by_url={portfolio: "scoring_trusted"},
+        enriched_contents=[],
+    )
+
+    mock_cache = MagicMock()
+    mock_cache.get.return_value = None
+    with patch("agent.enrichment.get_url_cache", return_value=mock_cache):
+        with patch(
+            "agent.enrichment.validate_url",
+            return_value=MagicMock(allowed=True, reason=None),
+        ):
+            with patch(
+                "agent.enrichment.check_allowlist",
+                return_value=MagicMock(allowed=True, reason=None, domain_category="portfolio"),
+            ):
+                result = asyncio.run(
+                    fetch_profiles([portfolio], ctx, discovery_only=True)
+                )
+
+    assert result["ok"] is True
+    assert result.get("discovery_only") is True
+    assert ctx.state.get("portfolio_discovery_completed") is True
+    mock_fetch_batch.assert_called_once()
+    assert linkedin in result.get("exa_fetchable_discovered_urls", [])
+    assert discovered_repo in result.get("github_api_repo_urls", [])
+    assert discovered_repo in result.get("discovered_github_repo_urls", [])
+
+
+@patch("agent.enrichment.fetch_url_text_batch")
+def test_fetch_profiles_auto_discovery_only_for_single_resume_portfolio(
+    mock_fetch_batch, test_settings
+) -> None:
+    portfolio = "https://janedoe.dev/portfolio"
+    mock_fetch_batch.return_value = {portfolio: "portfolio " * 30}
+
+    ctx = MagicMock()
+    ctx.state = _FakeState(
+        profile_urls=[portfolio],
+        resume_profile_urls=[portfolio],
+        profile_trust_by_url={portfolio: "scoring_trusted"},
+        enriched_contents=[],
+    )
+
+    mock_cache = MagicMock()
+    mock_cache.get.return_value = None
+    with patch("agent.enrichment.get_url_cache", return_value=mock_cache):
+        with patch(
+            "agent.enrichment.validate_url",
+            return_value=MagicMock(allowed=True, reason=None),
+        ):
+            with patch(
+                "agent.enrichment.check_allowlist",
+                return_value=MagicMock(allowed=True, reason=None, domain_category="portfolio"),
+            ):
+                result = asyncio.run(fetch_profiles([portfolio], ctx))
+
+    assert result.get("discovery_only") is True
+    mock_fetch_batch.assert_called_once()
+
+
 @patch("agent.enrichment.fetch_url_text", return_value="Python projects and OSS contributions.")
 def test_fetch_profile_content_success(mock_fetch, test_settings) -> None:
     url = "https://github.com/janedoe"
@@ -123,13 +205,13 @@ def test_fetch_profile_content_rejects_unknown_url(test_settings) -> None:
     "agent.enrichment.fetch_url_text_batch",
     return_value={
         "https://github.com/janedoe": "Portfolio and design systems.",
-        "https://www.behance.net/janedoe": "Portfolio and design systems.",
+        "https://behance.net/janedoe": "Portfolio and design systems.",
     },
 )
 def test_fetch_profiles_parallel_success(mock_fetch_batch, mock_fetch_html, test_settings) -> None:
     urls = [
         "https://github.com/janedoe",
-        "https://www.behance.net/janedoe",
+        "https://behance.net/janedoe",
     ]
     ctx = MagicMock()
     ctx.state = _FakeState(
@@ -219,7 +301,7 @@ def test_fetch_profiles_respects_session_budget(monkeypatch, test_settings) -> N
 
 def test_fetch_profiles_skips_already_enriched_urls(test_settings) -> None:
     trusted = "https://github.com/janedoe"
-    another = "https://www.behance.net/janedoe"
+    another = "https://behance.net/janedoe"
     ctx = MagicMock()
     ctx.state = _FakeState(
         profile_urls=[trusted, another],
@@ -240,7 +322,7 @@ def test_fetch_profiles_skips_already_enriched_urls(test_settings) -> None:
 
     eligible, skipped, truncated = plan_batch_profile_fetches(ctx.state, [trusted, another])
 
-    assert eligible == [another]
+    assert eligible == ["https://behance.net/janedoe"]
     assert truncated == 0
     assert len(skipped) == 1
     assert skipped[0]["error"] == "already_fetched"
@@ -352,7 +434,7 @@ def test_fetch_profiles_discovers_portfolio_links_and_github_repos(
     assert result["ok"] is True
     assert result["discovered_non_github_count"] >= 1
     assert result["discovered_github_count"] >= 1
-    assert discovered_non_github in ctx.state.get("profile_urls", [])
+    assert discovered_non_github in ctx.state.get("discovered_profile_urls", [])
     assert discovered_repo in ctx.state.get("discovered_github_repo_urls", [])
 
 
@@ -405,8 +487,8 @@ def test_fetch_profiles_discovers_github_profile_from_html_when_exa_text_omits_l
 
     assert result["ok"] is True
     mock_fetch_html.assert_called_once_with(portfolio)
-    profile_urls = [url.lower() for url in ctx.state.get("profile_urls", [])]
-    assert "https://github.com/manavv007" in profile_urls
+    discovered_profiles = [url.lower() for url in ctx.state.get("discovered_profile_urls", [])]
+    assert "https://github.com/manavv007" in discovered_profiles
     assert ctx.state.get("github_username") == "Manavv007"
     github = ctx.state.get("github_repo_analyses")
     assert isinstance(github, dict)
@@ -418,6 +500,10 @@ def _base_session_state(**extras) -> _FakeState:
         application_id=APP_ID,
         job_id=JOB_ID,
         resume_text="Python engineer with six years of backend experience.",
+        screening_mode="agent",
+        portfolio_role_category="software_engineering",
+        portfolio_role_reasoning="Backend engineering role requires GitHub proof.",
+        portfolio_role_source="agent",
         jd_structured={
             "domain": "technical",
             "must_have": ["Python"],
@@ -445,6 +531,103 @@ def _base_session_state(**extras) -> _FakeState:
     )
     state.update(extras)
     return state
+
+
+@pytest.mark.asyncio
+async def test_classify_portfolio_role_rejects_swe_for_ux_engineer_title() -> None:
+    ctx = MagicMock()
+    ctx.state = _FakeState(
+        application_id=APP_ID,
+        job_id=JOB_ID,
+        screening_mode="agent",
+        jd_structured={"job_title": "UX Engineer Intern"},
+    )
+    result = await classify_portfolio_role(
+        "software_engineering",
+        "Role lists React and Node.js.",
+        ctx,
+    )
+    assert result["ok"] is False
+    assert result["error"] == "role_category_mismatch"
+    assert "ux_engineering" in result["message"]
+
+
+@pytest.mark.asyncio
+async def test_classify_portfolio_role_ux_engineering_accepts_behance_platforms() -> None:
+    ctx = MagicMock()
+    ctx.state = _FakeState(
+        application_id=APP_ID,
+        job_id=JOB_ID,
+        screening_mode="agent",
+        jd_structured={"job_title": "UX Engineer Intern"},
+    )
+    result = await classify_portfolio_role(
+        "ux_engineering",
+        "Hybrid UX and frontend implementation role.",
+        ctx,
+    )
+    assert result["ok"] is True
+    assert result["role_category"] == "ux_engineering"
+    assert "behance.net" in result["required_platforms"]
+    assert "github.com" in result["required_platforms"]
+    assert result["code_evidence_required"] is False
+
+
+@pytest.mark.asyncio
+async def test_classify_portfolio_role_stores_category_and_returns_guidance() -> None:
+    ctx = MagicMock()
+    ctx.state = _FakeState(
+        application_id=APP_ID,
+        job_id=JOB_ID,
+        screening_mode="agent",
+    )
+    result = await classify_portfolio_role(
+        "design",
+        "UX Engineer Intern focused on Figma and Behance portfolio proof.",
+        ctx,
+    )
+    assert result["ok"] is True
+    assert result["role_category"] == "design"
+    assert "behance.net" in result["required_platforms"]
+    assert result["code_evidence_required"] is False
+    assert ctx.state["portfolio_role_category"] == "design"
+    assert ctx.state["portfolio_role_source"] == "agent"
+
+
+@pytest.mark.asyncio
+async def test_submit_screening_result_requires_classification_in_agent_mode() -> None:
+    from agent.prep_context import clear_prep_state
+
+    clear_prep_state("11111111-1111-4111-8111-111111111111")
+    ctx = MagicMock()
+    ctx.state = _FakeState(
+        application_id=APP_ID,
+        job_id=JOB_ID,
+        resume_text="Engineer",
+        screening_mode="agent",
+        jd_structured={
+            "must_have": ["Python"],
+            "requirements": [
+                {
+                    "text": "Python",
+                    "weight": "must_have",
+                    "requirement_type": "technical_skill",
+                }
+            ],
+        },
+        rubric=[
+            {
+                "criterion": "Python",
+                "weight": "must_have",
+                "requirement_type": "technical_skill",
+            }
+        ],
+        enriched_contents=[],
+    )
+    with patch("agent.adk_tools.await_sandbox_for_scoring", new_callable=AsyncMock):
+        result = await submit_screening_result(_llm_scoring_payload(), ctx)
+    assert result["ok"] is False
+    assert any("classify_portfolio_role" in err for err in result["errors"])
 
 
 def _llm_scoring_payload(**overrides) -> dict:
@@ -625,3 +808,45 @@ def test_github_repo_urls_from_state_falls_back_to_profile_urls() -> None:
         "github_repo_analyses": {},
     }
     assert _github_repo_urls_from_state(state) == repos
+
+
+@pytest.mark.asyncio
+async def test_analyze_github_merges_prep_discovered_repos() -> None:
+    app_id = "33333333-3333-4333-8333-333333333333"
+    portfolio = "https://manavbhavsar-portfolio.vercel.app/"
+    discovered = [
+        "https://github.com/manavv007/exaai-adk",
+        "https://github.com/manavv007/other-repo",
+    ]
+    register_prep_state(
+        {
+            "application_id": app_id,
+            "profile_urls": [portfolio],
+            "discovered_github_repo_urls": discovered,
+        }
+    )
+    try:
+        ctx = MagicMock()
+        ctx.state = _FakeState(application_id=app_id, profile_urls=[portfolio])
+
+        with patch(
+            "agent.tools.github_analyzer.analyze_github_repos",
+            new_callable=AsyncMock,
+        ) as mock_analyze:
+            mock_analyze.return_value = {
+                "username": "manavv007",
+                "repo_analyses": [{"url": discovered[0], "name": "exaai-adk"}],
+                "overall_github_signal": "moderate",
+                "coding_style_summary": "Solid Python usage.",
+            }
+            result = await analyze_github(ctx)
+
+        assert result["ok"] is True
+        assert result["username"] == "manavv007"
+        assert result.get("username_source") in ("repo_urls", "cached")
+        mock_analyze.assert_called_once()
+        call_kwargs = mock_analyze.call_args.kwargs
+        assert call_kwargs["username"] == "manavv007"
+        assert call_kwargs["discovered_repo_urls"] == discovered
+    finally:
+        clear_prep_state(app_id)

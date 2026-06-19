@@ -218,52 +218,130 @@ def _title_from_profile_meta(
     return None
 
 
+def _is_exa_profile_source_url(
+    url: str,
+    *,
+    resume_profile_urls: set[str] | None = None,
+) -> bool:
+    from agent.security.profile_identity import (
+        is_exa_enrichable_profile_url,
+        is_personal_portfolio_crawl_url,
+    )
+
+    normalized = _normalize_url(url)
+    if not normalized or not is_exa_enrichable_profile_url(normalized):
+        return False
+    resume_set = {u.lower() for u in (resume_profile_urls or set()) if u}
+    if normalized.lower() in resume_set:
+        return True
+    return is_personal_portfolio_crawl_url(normalized)
+
+
 def sanitize_sources_crawled(
     raw: Any,
     *,
     enriched_fallback: list[dict[str, Any]],
     profile_urls_fallback: list[str] | None = None,
+    resume_profile_urls: list[str] | None = None,
     profile_url_meta: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     items = raw if isinstance(raw, list) else []
     sanitized: list[dict[str, Any]] = []
     seen: set[str] = set()
+    seen_identity: set[tuple[str, str]] = set()
+    resume_urls = {
+        _normalize_url(str(raw_url or "")).lower()
+        for raw_url in (resume_profile_urls or profile_urls_fallback or [])
+    }
+    resume_urls.discard("")
+    enriched_urls = {
+        _normalize_url(str(item.get("url") or "")).lower()
+        for item in enriched_fallback
+        if isinstance(item, dict) and _normalize_url(str(item.get("url") or ""))
+    }
+    enriched_urls.discard("")
+
+    def _append_entry(
+        url: str,
+        relevance: str,
+        *,
+        title: str | None = None,
+    ) -> None:
+        from agent.tools.link_extractor import canonical_profile_url, profile_url_identity_key
+
+        display_url = canonical_profile_url(url) or url
+        identity = profile_url_identity_key(display_url)
+        if not display_url:
+            return
+        if identity:
+            if identity in seen_identity:
+                return
+            seen_identity.add(identity)
+        elif display_url in seen:
+            return
+        seen.add(display_url.lower())
+        if relevance not in _VALID_RELEVANCE:
+            relevance = "medium"
+        entry: dict[str, Any] = {"url": display_url, "relevance": relevance}
+        if isinstance(title, str) and title.strip():
+            entry["title"] = title.strip()[:200]
+        sanitized.append(entry)
+
+    for item in enriched_fallback:
+        if not isinstance(item, dict):
+            continue
+        url = _normalize_url(str(item.get("url") or ""))
+        if not _is_exa_profile_source_url(url, resume_profile_urls=resume_urls):
+            continue
+        if item.get("skipped_fetch"):
+            continue
+        relevance = "high" if item.get("ok", True) else "low"
+        title = item.get("domain_category")
+        if not isinstance(title, str) or not title.strip():
+            title = _title_from_profile_meta(url, profile_url_meta)
+        _append_entry(url, relevance, title=title if isinstance(title, str) else None)
 
     for item in items:
         if not isinstance(item, dict):
             continue
         url = _normalize_url(str(item.get("url") or ""))
-        if not url or url in seen:
+        if not url:
             continue
-        seen.add(url)
+        if not _is_exa_profile_source_url(url, resume_profile_urls=resume_urls):
+            continue
         relevance = str(item.get("relevance") or "medium").strip().lower()
-        if relevance not in _VALID_RELEVANCE:
-            relevance = "medium"
-        entry: dict[str, Any] = {"url": url, "relevance": relevance}
         title = item.get("title")
-        if isinstance(title, str) and title.strip():
-            entry["title"] = title.strip()[:200]
-        sanitized.append(entry)
+        title_str = title.strip()[:200] if isinstance(title, str) and title.strip() else None
+        _append_entry(url, relevance, title=title_str)
+
+    for raw_url in profile_urls_fallback or []:
+        url = _normalize_url(str(raw_url or ""))
+        if not _is_exa_profile_source_url(url, resume_profile_urls=resume_urls):
+            continue
+        url_key = url.lower()
+        if url_key not in enriched_urls and url_key not in resume_urls:
+            continue
+        title = _title_from_profile_meta(url, profile_url_meta)
+        _append_entry(url, "medium", title=title)
 
     if sanitized:
         return sanitized
 
     for item in enriched_fallback:
         url = _normalize_url(str(item.get("url") or ""))
-        if not url or url in seen:
+        if not url:
             continue
-        seen.add(url)
+        if not _is_exa_profile_source_url(url, resume_profile_urls=resume_urls):
+            continue
         if item.get("skipped_fetch"):
             relevance = "low"
         elif item.get("ok", True):
             relevance = "high"
         else:
             relevance = "low"
-        entry: dict[str, Any] = {"url": url, "relevance": relevance}
         title = item.get("domain_category")
-        if isinstance(title, str) and title.strip():
-            entry["title"] = title.strip()[:200]
-        sanitized.append(entry)
+        title_str = title.strip()[:200] if isinstance(title, str) and title.strip() else None
+        _append_entry(url, relevance, title=title_str)
 
     if sanitized:
         return sanitized
@@ -272,12 +350,11 @@ def sanitize_sources_crawled(
         url = _normalize_url(str(raw_url or ""))
         if not url or url in seen:
             continue
-        seen.add(url)
-        entry = {"url": url, "relevance": "medium"}
+        url_key = url.lower()
+        if url_key not in enriched_urls and url_key not in resume_urls:
+            continue
         title = _title_from_profile_meta(url, profile_url_meta)
-        if title:
-            entry["title"] = title
-        sanitized.append(entry)
+        _append_entry(url, "medium", title=title)
     return sanitized
 
 

@@ -143,7 +143,7 @@ def compute_sandbox_score_penalty(sandbox_reports: list[dict[str, Any]]) -> int:
 
     worst = max(penalties)
     average = sum(penalties) / len(penalties)
-    return max(0, min(15, int(round((0.7 * worst) + (0.3 * average)))))
+    return max(0, min(10, int(round((0.7 * worst) + (0.3 * average)))))
 
 
 def compute_sandbox_score_ceiling(sandbox_reports: list[dict[str, Any]]) -> int | None:

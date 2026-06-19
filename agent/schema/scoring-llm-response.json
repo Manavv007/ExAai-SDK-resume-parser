@@ -5,8 +5,7 @@
     "resume_similarity_score",
     "requirement_matches",
     "recommendation",
-    "recommendation_reasoning",
-    "red_flags"
+    "recommendation_reasoning"
   ],
   "properties": {
     "resume_similarity_score": {
@@ -45,19 +44,6 @@
       "type": "string",
       "enum": ["advance", "hold", "reject"]
     },
-    "recommendation_reasoning": { "type": "string", "maxLength": 500 },
-    "red_flags": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["flag", "severity", "evidence"],
-        "properties": {
-          "flag": { "type": "string" },
-          "severity": { "type": "string", "enum": ["low", "medium", "high"] },
-          "evidence": { "type": "string", "maxLength": 200 }
-        }
-      }
-    }
+    "recommendation_reasoning": { "type": "string", "maxLength": 500 }
   }
 }

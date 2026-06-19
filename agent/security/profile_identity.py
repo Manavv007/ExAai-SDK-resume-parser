@@ -274,6 +274,38 @@ def _token_sets_related(left: frozenset[str] | set[str], right: frozenset[str] |
     return False
 
 
+def is_exa_enrichable_profile_url(url: str) -> bool:
+    """True for resume portfolio URLs that should be fetched via Exa (not GitHub/GitLab repos)."""
+    from agent.tools.github_analyzer import normalize_github_repo_url
+    from agent.tools.link_extractor import normalize_url
+
+    normalized = normalize_url(url)
+    if not normalized:
+        return False
+    return normalize_github_repo_url(normalized) is None
+
+
+def is_portfolio_or_custom_url(url: str) -> bool:
+    """True for URLs that are personal portfolio pages or custom domains, excluding major platforms."""
+    from agent.tools.link_extractor import normalize_url
+
+    normalized = normalize_url(url)
+    if not normalized:
+        return False
+    parsed = urlparse(normalized)
+    host = parsed.netloc.lower().replace("www.", "")
+
+    major_platforms = ("github.com", "gitlab.com", "linkedin.com", "hackerrank.com", "kaggle.com")
+    if any(host == p or host.endswith("." + p) for p in major_platforms):
+        return False
+    return True
+
+
+def is_personal_portfolio_crawl_url(url: str) -> bool:
+    """Candidate-owned profile pages worth Exa follow-up (not LinkedIn schools/posts/companies)."""
+    return _is_personal_identity_profile_url(url)
+
+
 def _is_personal_identity_profile_url(url: str) -> bool:
     """Personal profile URLs used for cross-handle consistency (not company/school pages)."""
     from agent.tools.link_extractor import normalize_url
@@ -284,6 +316,27 @@ def _is_personal_identity_profile_url(url: str) -> bool:
     parsed = urlparse(normalized)
     host = (parsed.netloc or "").lower().replace("www.", "")
     parts = [p for p in parsed.path.split("/") if p]
+
+    known_platforms = (
+        "github.com",
+        "gitlab.com",
+        "linkedin.com",
+        "behance.net",
+        "dribbble.com",
+        "figma.com",
+        "artstation.com",
+        "hackerrank.com",
+        "kaggle.com",
+    )
+    is_known_platform = any(
+        host == p or host.endswith("." + p) for p in known_platforms
+    )
+
+    if not is_known_platform:
+        from agent.tools.link_extractor import is_fetchable_personal_profile_url
+
+        return is_fetchable_personal_profile_url(normalized)
+
     if host.endswith("github.com") or host.endswith("gitlab.com"):
         if not parts or parts[0].lower() in {
             "orgs",
@@ -293,12 +346,20 @@ def _is_personal_identity_profile_url(url: str) -> bool:
             "features",
             "enterprise",
             "sponsors",
+            "login",
+            "signup",
+            "explore",
         }:
             return False
         # Profile root only — repo links (/user/repo/...) are not identity profiles.
         return len(parts) == 1
     if "linkedin.com" in host:
         return len(parts) >= 2 and parts[0].lower() == "in"
+    portfolio_hosts = ("behance.net", "dribbble.com", "figma.com", "artstation.com")
+    if any(host == marker or host.endswith(f".{marker}") for marker in portfolio_hosts):
+        from agent.tools.link_extractor import is_fetchable_personal_profile_url
+
+        return is_fetchable_personal_profile_url(normalized)
     return any(
         host == profile_host or host.endswith("." + profile_host) for profile_host in _PROFILE_HOSTS
     )
@@ -430,7 +491,27 @@ def assess_profile_links(
             )
         )
 
-    return assessments
+    # Explicit resume-listed portfolio URLs (non-repo) are always Exa-fetchable.
+    adjusted: list[ProfileTrustAssessment] = []
+    for item in assessments:
+        if (
+            item.source == "explicit"
+            and is_portfolio_or_custom_url(item.url)
+            and item.trust == ProfileTrust.SCORING_UNTRUSTED
+        ):
+            adjusted.append(
+                ProfileTrustAssessment(
+                    url=item.url,
+                    trust=ProfileTrust.SCORING_LIMITED,
+                    source=item.source,
+                    slug_tokens=item.slug_tokens,
+                    reasons=(*item.reasons, "explicit_profile_fetchable_for_integrity_check"),
+                )
+            )
+        else:
+            adjusted.append(item)
+
+    return adjusted
 
 
 def build_identity_red_flags(
@@ -526,6 +607,16 @@ def format_enriched_content_for_scoring(
             "===END UNVERIFIED PROFILE==="
         )
     return content
+
+
+def slug_tokens_from_url(url: str) -> list[str]:
+    """Public wrapper for profile slug tokenization used by integrity scoring."""
+    return _slug_tokens_from_url(url)
+
+
+def slug_lists_plausibly_same_person(slug_lists: list[list[str]]) -> bool:
+    """Public wrapper for cross-profile slug plausibility checks."""
+    return _slug_lists_plausibly_same_person(slug_lists)
 
 
 def merge_identity_red_flags(

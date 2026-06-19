@@ -67,6 +67,45 @@ def test_static_git_metrics(tmp_path: Path) -> None:
     assert metrics["days_since_last_commit"] >= 0
 
 
+def test_static_git_metrics_same_email_different_names_is_sole_author(tmp_path: Path) -> None:
+    _init_git_repo(tmp_path)
+
+    for idx, author_name in enumerate(("Manav", "Manav Bhavsar", "Manavv007"), start=1):
+        (tmp_path / f"file{idx}.txt").write_text(f"v{idx}", encoding="utf-8")
+        subprocess.run(["git", "add", f"file{idx}.txt"], cwd=str(tmp_path), check=True, capture_output=True)
+        subprocess.run(
+            [
+                "git",
+                "-c",
+                f"user.name={author_name}",
+                "-c",
+                "user.email=bhavsarmanav14@gmail.com",
+                "commit",
+                "-m",
+                f"commit {idx}",
+            ],
+            cwd=str(tmp_path),
+            check=True,
+            capture_output=True,
+        )
+
+    metrics = _calculate_git_metrics(tmp_path)
+    assert metrics["commit_count"] == 3
+    assert metrics["unique_authors"] == 1
+    assert metrics["sole_author"] is True
+    assert metrics["top_author_commit_share"] == 1.0
+
+
+def test_static_git_metrics_mixed_gmail_and_github_noreply_is_sole_author(tmp_path: Path) -> None:
+    from agent.sandbox.evaluator.git_local_analyzer import _summarize_authorship
+
+    identities = ["email:bhavsarmanav14@gmail.com"] * 30 + ["github:manavv007"] * 3
+    unique, share, sole = _summarize_authorship(identities)
+    assert unique == 1
+    assert sole is True
+    assert share == 1.0
+
+
 def test_static_code_metrics_python_ast(tmp_path: Path) -> None:
     python_code = """
 def func_without_annotation(a, b):

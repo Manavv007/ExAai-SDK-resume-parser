@@ -2,12 +2,12 @@
 Goal: objectively bound the probability that a submitted link profile belongs to the same person as the resume, without relying on name/email equality.
 
 ## Finalized Parameters (User-Confirmed)
-1. Account creation date vs resume timeline → pure math, no subjectivity
-2. LinkedIn contact section → GitHub link → identity-anchored declaration
-3. Mutual cross-links between profiles → both accounts curated together
-4. GitHub public email = resume email
-5. GitHub twitter_username field match
-6. Profile README links → mutual curation evidence
+1. Account creation date vs resume timeline → **implemented** (`github_account_timeline` in `agent/security/candidate_integrity.py`)
+2. LinkedIn contact section → GitHub link → **implemented** (`linkedin_contact_links`)
+3. Mutual cross-links between profiles → **implemented** (`mutual_cross_links`)
+4. GitHub public email = resume email → planned (not yet in integrity v1)
+5. GitHub twitter_username field match → planned
+6. Profile README links → **implemented** (`github_profile_readme_links`)
 
 ---
 

@@ -80,6 +80,23 @@ def test_github_repo_url_is_not_personal_identity_profile() -> None:
     )
 
 
+def test_linkedin_non_profile_urls_not_personal_portfolio_crawl() -> None:
+    from agent.security.profile_identity import is_personal_portfolio_crawl_url
+
+    assert is_personal_portfolio_crawl_url("https://linkedin.com/in/manavbhavsar0908") is True
+    assert is_personal_portfolio_crawl_url("https://www.linkedin.com/school/pdeuofficial") is False
+    assert is_personal_portfolio_crawl_url("https://linkedin.com/company/nptel") is False
+    assert (
+        is_personal_portfolio_crawl_url(
+            "https://www.linkedin.com/posts/krish-parmar-developer_ai-llm-activity-7419757286421626880-AS3G"
+        )
+        is False
+    )
+    assert is_personal_portfolio_crawl_url("https://behance.net/archidaga") is True
+    assert is_personal_portfolio_crawl_url("https://behance.net/joblist?tracking_source=nav20") is False
+    assert is_personal_portfolio_crawl_url("https://behance.net/?tracking_source=nav20") is False
+
+
 def test_linkedin_plus_github_repos_no_identity_mismatch_flag() -> None:
     """Project repo URLs must not conflict with a lone LinkedIn profile."""
     resume = """
@@ -123,6 +140,31 @@ def test_conflicting_explicit_profiles_untrusted() -> None:
     links = extract_links(resume, max_urls=10)
     assessments = assess_profile_links(resume, links)
     assert all(a.trust == ProfileTrust.SCORING_UNTRUSTED for a in assessments)
+
+
+def test_behance_explicit_profile_is_exa_fetchable() -> None:
+    resume = """
+    Jane Designer
+    Portfolio: https://www.behance.net/janedesign
+    GitHub: https://github.com/totally-other-handle
+    """
+    links = extract_links(resume, max_urls=10)
+    assessments = assess_profile_links(resume, links)
+    behance = [a for a in assessments if "behance.net" in a.url][0]
+    assert behance.trust == ProfileTrust.SCORING_LIMITED
+
+
+def test_is_exa_enrichable_profile_url() -> None:
+    from agent.security.profile_identity import is_exa_enrichable_profile_url
+
+    assert is_exa_enrichable_profile_url("https://www.behance.net/designer") is True
+    assert is_exa_enrichable_profile_url("https://dribbble.com/designer") is True
+    assert (
+        is_exa_enrichable_profile_url(
+            "https://github.com/user/Some-Project-Repo"
+        )
+        is False
+    )
 
 
 def test_inferred_url_without_match_untrusted() -> None:

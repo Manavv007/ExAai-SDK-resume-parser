@@ -51,6 +51,7 @@ async def test_agent_screening_mocked_tool_flow(
     )
     state["request_id"] = "req-agent-1"
     state["processing_time_ms"] = 1200
+    state["screening_mode"] = "agent"
 
     trusted_url = next(
         (url for url in state["profile_urls"] if "github.com" in url),

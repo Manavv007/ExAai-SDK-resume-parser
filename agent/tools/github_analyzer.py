@@ -7,7 +7,7 @@ import json
 import logging
 import re
 from dataclasses import asdict, dataclass, field
-from datetime import UTC
+from datetime import UTC, datetime
 from typing import Any, Literal
 
 import pydantic
@@ -132,21 +132,178 @@ class GitHubAnalysis:
     repo_selection_mode: str = "none"
     candidate_tags: list[str] = field(default_factory=list)
     github_metadata: dict[str, Any] = field(default_factory=dict)
+    user_profile: dict[str, Any] = field(default_factory=dict)
+    profile_readme: str = ""
+    activity_timeline: dict[str, Any] = field(default_factory=dict)
 
 
-def extract_github_username(urls: list[str]) -> str | None:
-    """Extract GitHub username from a list of profile/repo URLs."""
+def extract_github_owner_from_repo_url(url: str) -> str | None:
+    """Owner login from a repository URL; None for profile-only or reserved paths."""
+    normalized = normalize_github_repo_url(url)
+    if not normalized:
+        return None
+    match = re.search(r"github\.com/([^/]+)/", normalized, re.IGNORECASE)
+    if not match:
+        return None
+    return match.group(1)
+
+
+def extract_github_owners_from_repo_urls(urls: list[str]) -> list[str]:
+    """Owners from repo URLs in first-seen order, deduped case-insensitively."""
+    seen: set[str] = set()
+    owners: list[str] = []
+    for url in urls:
+        owner = extract_github_owner_from_repo_url(url)
+        if not owner:
+            continue
+        key = owner.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        owners.append(owner)
+    return owners
+
+
+def resolve_github_username_from_repos(
+    urls: list[str],
+    *,
+    owner_hint: str | None = None,
+) -> str | None:
+    """Pick one owner when multiple repo URLs agree; None if ambiguous."""
+    from collections import Counter
+
+    repo_urls = extract_github_repo_urls(urls)
+    counts: Counter[str] = Counter()
+    canonical: dict[str, str] = {}
+    for url in repo_urls:
+        owner = extract_github_owner_from_repo_url(url)
+        if not owner:
+            continue
+        key = owner.lower()
+        counts[key] += 1
+        canonical.setdefault(key, owner)
+
+    if not counts:
+        return None
+
+    hint = str(owner_hint or "").strip().lower()
+    if hint and hint in counts:
+        return canonical[hint]
+
+    if len(counts) == 1:
+        return canonical[next(iter(counts))]
+
+    total = sum(counts.values())
+    top_key, top_count = counts.most_common(1)[0]
+    if total > 0 and (top_count / total) >= 0.8:
+        return canonical[top_key]
+
+    logger.info("ambiguous_github_owners owners=%s", dict(counts))
+    return None
+
+
+def extract_github_profile_username(urls: list[str]) -> str | None:
+    """First explicit GitHub profile URL owner (not a repo path)."""
     for url in urls:
         if not url:
             continue
-        # Match https://github.com/username or https://www.github.com/username
-        match = re.search(r"https?://(?:www\.)?github\.com/([^/?#]+)", url)
+        profile = normalize_github_profile_url(url)
+        if not profile:
+            continue
+        match = re.search(r"github\.com/([^/]+)$", profile, re.IGNORECASE)
         if match:
-            username = match.group(1)
-            # Exclude standard GitHub non-user pages
-            if username.lower() not in GITHUB_RESERVED_PATHS:
-                return username
+            return match.group(1)
     return None
+
+
+def extract_github_username(urls: list[str]) -> str | None:
+    """Extract GitHub username from profile URLs, else consensus from repo URLs."""
+    profile_user = extract_github_profile_username(urls)
+    if profile_user:
+        return profile_user
+    return resolve_github_username_from_repos(urls)
+
+
+def _owner_hint_from_state(state: dict[str, Any] | None) -> str | None:
+    if not isinstance(state, dict):
+        return None
+    cached = str(state.get("github_username") or "").strip()
+    if cached:
+        return cached
+    resume = state.get("resume_structured")
+    if isinstance(resume, dict):
+        for key in ("github_username", "github_handle"):
+            value = str(resume.get(key) or "").strip()
+            if value:
+                return value.lstrip("@")
+    return None
+
+
+def resolve_github_username_with_source(
+    state: dict[str, Any] | None = None,
+    *,
+    explicit_username: str | None = None,
+    profile_urls: list[str] | None = None,
+    discovered_repo_urls: list[str] | None = None,
+) -> tuple[str | None, str | None]:
+    """
+    Resolve GitHub username and how it was inferred.
+
+    Returns (username, source) where source is one of:
+    explicit, cached, analysis, profile_url, repo_urls, or None.
+    """
+    explicit = str(explicit_username or "").strip()
+    if explicit:
+        return explicit, "explicit"
+
+    if isinstance(state, dict):
+        cached = str(state.get("github_username") or "").strip()
+        if cached:
+            return cached, "cached"
+        github = state.get("github_repo_analyses")
+        if isinstance(github, dict):
+            from_analysis = str(github.get("username") or "").strip()
+            if from_analysis:
+                return from_analysis, "analysis"
+
+    profile_candidates: list[str] = []
+    repo_candidates: list[str] = []
+
+    if isinstance(state, dict):
+        profile_candidates.extend(str(url) for url in list(state.get("profile_urls") or []) if url)
+        profile_candidates.extend(
+            str(url) for url in list(state.get("discovered_profile_urls") or []) if url
+        )
+        repo_candidates.extend(
+            str(url) for url in list(state.get("discovered_github_repo_urls") or []) if url
+        )
+        github = state.get("github_repo_analyses")
+        if isinstance(github, dict):
+            for key in ("resume_github_repo_urls", "selected_sandbox_repo_urls"):
+                repo_candidates.extend(str(url) for url in list(github.get(key) or []) if url)
+            repo_candidates.extend(
+                str(url) for url in list(github.get("discovered_github_repo_urls") or []) if url
+            )
+
+    profile_candidates.extend(str(url) for url in list(profile_urls or []) if url)
+    repo_candidates.extend(str(url) for url in list(discovered_repo_urls or []) if url)
+
+    profile_user = extract_github_profile_username(profile_candidates)
+    if profile_user:
+        return profile_user, "profile_url"
+
+    repo_url_lists = [
+        repo_candidates,
+        extract_github_repo_urls(profile_candidates),
+        extract_github_repo_urls(profile_candidates + repo_candidates),
+    ]
+    merged_repos = merge_github_repo_urls(*repo_url_lists)
+    owner_hint = _owner_hint_from_state(state)
+    repo_user = resolve_github_username_from_repos(merged_repos, owner_hint=owner_hint)
+    if repo_user:
+        return repo_user, "repo_urls"
+
+    return None, None
 
 
 def resolve_github_username(
@@ -157,38 +314,24 @@ def resolve_github_username(
     discovered_repo_urls: list[str] | None = None,
 ) -> str | None:
     """Resolve GitHub username from session state and/or URL lists."""
-    explicit = str(explicit_username or "").strip()
-    if explicit:
-        return explicit
-
-    urls: list[str] = []
-    if isinstance(state, dict):
-        cached = str(state.get("github_username") or "").strip()
-        if cached:
-            return cached
-        github = state.get("github_repo_analyses")
-        if isinstance(github, dict):
-            from_analysis = str(github.get("username") or "").strip()
-            if from_analysis:
-                return from_analysis
-        urls.extend(str(url) for url in list(state.get("profile_urls") or []) if url)
-        urls.extend(
-            str(url)
-            for url in list(state.get("discovered_github_repo_urls") or [])
-            if url
-        )
-    urls.extend(str(url) for url in list(profile_urls or []) if url)
-    urls.extend(str(url) for url in list(discovered_repo_urls or []) if url)
-    return extract_github_username(urls)
+    username, _source = resolve_github_username_with_source(
+        state,
+        explicit_username=explicit_username,
+        profile_urls=profile_urls,
+        discovered_repo_urls=discovered_repo_urls,
+    )
+    return username
 
 
 def sync_github_identity(state: dict[str, Any]) -> str | None:
     """Propagate GitHub username and minimal analysis shell after portfolio discovery."""
-    username = resolve_github_username(state)
+    username, source = resolve_github_username_with_source(state)
     if not username:
         return None
 
     state["github_username"] = username
+    if source:
+        state["github_username_source"] = source
     github = state.get("github_repo_analyses")
     if not isinstance(github, dict):
         github = {}
@@ -200,6 +343,55 @@ def sync_github_identity(state: dict[str, Any]) -> str | None:
             "candidate_tags": list(github.get("candidate_tags") or []),
         }
         state["github_repo_analyses"] = github
+    return username
+
+
+def ensure_minimal_github_shell_from_repos(
+    state: dict[str, Any],
+    repo_urls: list[str] | None = None,
+) -> str | None:
+    """Infer username from repo URLs and seed a minimal github_repo_analyses shell."""
+    urls = list(repo_urls or [])
+    if not urls:
+        urls = merge_github_repo_urls(
+            list(state.get("discovered_github_repo_urls") or []),
+            extract_github_repo_urls(list(state.get("profile_urls") or [])),
+            extract_github_repo_urls(list(state.get("discovered_profile_urls") or [])),
+        )
+        github = state.get("github_repo_analyses")
+        if isinstance(github, dict):
+            urls = merge_github_repo_urls(
+                urls,
+                list(github.get("resume_github_repo_urls") or []),
+                list(github.get("discovered_github_repo_urls") or []),
+            )
+    if not urls:
+        return None
+
+    username = resolve_github_username_from_repos(urls, owner_hint=_owner_hint_from_state(state))
+    if not username:
+        return None
+
+    state["github_username"] = username
+    state.setdefault("github_username_source", "repo_urls")
+    github = state.get("github_repo_analyses")
+    if not isinstance(github, dict):
+        github = {}
+    resume_repos = list(github.get("resume_github_repo_urls") or [])
+    if not resume_repos:
+        resume_repos = extract_github_repo_urls(list(state.get("profile_urls") or []))
+    state["github_repo_analyses"] = {
+        **github,
+        "username": username,
+        "resume_github_repo_urls": resume_repos or urls,
+        "discovered_github_repo_urls": list(
+            github.get("discovered_github_repo_urls")
+            or state.get("discovered_github_repo_urls")
+            or []
+        ),
+        "repo_analyses": list(github.get("repo_analyses") or []),
+        "candidate_tags": list(github.get("candidate_tags") or []),
+    }
     return username
 
 
@@ -655,6 +847,7 @@ def _build_repo_github_metadata(repo: RepoMeta) -> dict[str, Any]:
         "default_branch": repo.default_branch,
         "archived": None,
         "topics": repo.topics,
+        "created_at": repo.created_at or None,
         "last_push_at": repo.updated_at,
         "license_present": None,
         "has_wiki": None,
@@ -663,6 +856,94 @@ def _build_repo_github_metadata(repo: RepoMeta) -> dict[str, Any]:
         "open_pr_ratio": None,
         "release_count": None,
         "contributors_count": None,
+    }
+
+
+def _user_profile_to_dict(user: Any) -> dict[str, Any]:
+    if user is None:
+        return {}
+    return {
+        "login": getattr(user, "login", "") or "",
+        "html_url": getattr(user, "html_url", "") or "",
+        "created_at": getattr(user, "created_at", "") or "",
+        "bio": getattr(user, "bio", None),
+        "blog": getattr(user, "blog", None),
+        "twitter_username": getattr(user, "twitter_username", None),
+        "email": getattr(user, "email", None),
+    }
+
+
+def _parse_iso_datetime(value: str) -> datetime | None:
+    cleaned = str(value or "").strip()
+    if not cleaned:
+        return None
+    try:
+        if cleaned.endswith("Z"):
+            cleaned = cleaned[:-1] + "+00:00"
+        return datetime.fromisoformat(cleaned)
+    except ValueError:
+        return None
+
+
+def _build_activity_timeline(
+    *,
+    resume_repo_urls: list[str],
+    repo_analyses: list[RepoAnalysis],
+    all_repos: list[RepoMeta],
+) -> dict[str, Any]:
+    """Earliest/latest activity among resume-listed GitHub repos."""
+    resume_keys = {
+        url.rstrip("/").lower()
+        for url in resume_repo_urls
+        if isinstance(url, str) and url.strip()
+    }
+    resume_names = {
+        url.rstrip("/").split("/")[-1].lower()
+        for url in resume_repo_urls
+        if isinstance(url, str) and "/" in url
+    }
+
+    activity_dates: list[datetime] = []
+    matched = 0
+    for analysis in repo_analyses:
+        analysis_url = str(analysis.url or "").rstrip("/").lower()
+        analysis_name = analysis_url.split("/")[-1] if analysis_url else ""
+        if resume_keys and analysis_url not in resume_keys and analysis_name not in resume_names:
+            continue
+        matched += 1
+        meta_created = analysis.github_metadata.get("created_at")
+        if isinstance(meta_created, str):
+            parsed = _parse_iso_datetime(meta_created)
+            if parsed:
+                activity_dates.append(parsed)
+        for commit in analysis.commits or []:
+            if not isinstance(commit, dict):
+                continue
+            parsed = _parse_iso_datetime(str(commit.get("date") or ""))
+            if parsed:
+                activity_dates.append(parsed)
+
+    if not activity_dates:
+        for repo in all_repos:
+            repo_url = str(repo.url or "").rstrip("/").lower()
+            repo_name = repo.name.lower()
+            if resume_keys and repo_url not in resume_keys and repo_name not in resume_names:
+                continue
+            matched += 1
+            parsed = _parse_iso_datetime(repo.created_at)
+            if parsed:
+                activity_dates.append(parsed)
+            parsed = _parse_iso_datetime(repo.updated_at)
+            if parsed:
+                activity_dates.append(parsed)
+
+    earliest = min(activity_dates) if activity_dates else None
+    latest = max(activity_dates) if activity_dates else None
+    return {
+        "earliest_activity_at": earliest.isoformat().replace("+00:00", "Z") if earliest else None,
+        "latest_activity_at": latest.isoformat().replace("+00:00", "Z") if latest else None,
+        "resume_repo_count": len(resume_repo_urls),
+        "matched_resume_repos": matched,
     }
 
 
@@ -1533,11 +1814,14 @@ async def analyze_github_repos(
     async with GitHubClient() as client:
         logger.info(f"Starting GitHub deep analysis for user: {username}")
 
-        # --- Parallel fetch: user events + user repos ---
-        events, all_repos = await asyncio.gather(
+        # --- Parallel fetch: user events + user repos + profile metadata ---
+        events, all_repos, user_meta, profile_readme = await asyncio.gather(
             client.get_user_events(username),
             client.get_user_repos(username),
+            client.get_user(username),
+            client.get_profile_readme(username),
         )
+        user_profile = _user_profile_to_dict(user_meta)
         collab_data = _analyze_collaboration(username, events)
 
         if not all_repos:
@@ -1551,6 +1835,11 @@ async def analyze_github_repos(
                 []
                 if sandbox_mode == "deferred"
                 else await _evaluate_sandbox_repos(selected_sandbox_urls, settings)
+            )
+            activity_timeline = _build_activity_timeline(
+                resume_repo_urls=all_repo_urls,
+                repo_analyses=[],
+                all_repos=[],
             )
             return asdict(
                 GitHubAnalysis(
@@ -1568,6 +1857,9 @@ async def analyze_github_repos(
                     selected_sandbox_repo_urls=selected_sandbox_urls,
                     sandbox_reports=sandbox_reports,
                     repo_selection_mode=selection_mode,
+                    user_profile=user_profile,
+                    profile_readme=profile_readme or "",
+                    activity_timeline=activity_timeline,
                 )
             )
 
@@ -1621,6 +1913,11 @@ async def analyze_github_repos(
 
         repos_dict_list = [asdict(r) for r in repo_analyses_list]
         candidate_tags = _classify_candidate_tags(jd_structured, repos_dict_list)
+        activity_timeline = _build_activity_timeline(
+            resume_repo_urls=all_repo_urls,
+            repo_analyses=repo_analyses_list,
+            all_repos=all_repos,
+        )
         github_metadata = {
             "total_public_repos": len(all_repos),
             "total_stars": sum_stars,
@@ -1723,5 +2020,8 @@ async def analyze_github_repos(
             repo_selection_mode=(sandbox_selection_mode if run_sandbox else selection_mode),
             candidate_tags=candidate_tags,
             github_metadata=github_metadata,
+            user_profile=user_profile,
+            profile_readme=profile_readme or "",
+            activity_timeline=activity_timeline,
         )
     )

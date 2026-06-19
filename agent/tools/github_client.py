@@ -27,7 +27,19 @@ class RepoMeta:
     is_fork: bool
     default_branch: str
     updated_at: str
+    created_at: str = ""
     topics: list[str] = field(default_factory=list)
+
+
+@dataclass
+class UserMeta:
+    login: str
+    html_url: str
+    created_at: str
+    bio: str | None = None
+    blog: str | None = None
+    twitter_username: str | None = None
+    email: str | None = None
 
 
 @dataclass
@@ -181,7 +193,19 @@ class GitHubClient:
             is_fork=repo.get("fork", False),
             default_branch=repo.get("default_branch", "main"),
             updated_at=repo.get("updated_at", ""),
+            created_at=repo.get("created_at", "") or "",
             topics=repo.get("topics", []),
+        )
+
+    def _user_meta_from_api(self, user: dict[str, Any]) -> UserMeta:
+        return UserMeta(
+            login=str(user.get("login") or ""),
+            html_url=str(user.get("html_url") or ""),
+            created_at=str(user.get("created_at") or ""),
+            bio=user.get("bio"),
+            blog=user.get("blog"),
+            twitter_username=user.get("twitter_username"),
+            email=user.get("email"),
         )
 
     async def get_repo_meta(self, owner: str, repo: str) -> RepoMeta | None:
@@ -193,6 +217,24 @@ class GitHubClient:
         except Exception as e:
             logger.warning("Failed to fetch repo %s/%s: %s", owner, repo, e)
             return None
+
+    async def get_user(self, username: str) -> UserMeta | None:
+        """Fetch public profile metadata for a GitHub user."""
+        url = f"https://api.github.com/users/{username}"
+        try:
+            response = await self._request("GET", url)
+            return self._user_meta_from_api(response.json())
+        except Exception as e:
+            logger.warning("Failed to fetch GitHub user %s: %s", username, e)
+            return None
+
+    async def get_profile_readme(self, username: str) -> str:
+        """Fetch the special profile README from ``{username}/{username}`` if present."""
+        for path in ("README.md", "readme.md", "README"):
+            content = await self.get_file_content(username, username, path)
+            if content.strip():
+                return content
+        return ""
 
     async def get_user_repos(self, username: str) -> list[RepoMeta]:
         """Fetch list of public repositories for a user."""

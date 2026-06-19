@@ -20,8 +20,6 @@ from agent.security.profile_identity import (
     IDENTITY_SCORING_RULES,
     assess_profile_links,
     assessments_to_dicts,
-    build_identity_red_flags,
-    should_cap_score_for_identity,
     trust_map_from_assessments,
 )
 from agent.tools.link_extractor import extract_links
@@ -94,7 +92,12 @@ def prepare_screening_state(
     import logging
     import threading
 
-    from agent.tools.github_analyzer import analyze_github_repos, extract_github_username
+    from agent.tools.github_analyzer import (
+        analyze_github_repos,
+        extract_github_repo_urls,
+        extract_github_username,
+        resolve_github_username_from_repos,
+    )
 
     logging.getLogger("exaai_adk.prep")
     started = time.monotonic()
@@ -115,10 +118,17 @@ def prepare_screening_state(
         pdf_hyperlinks=resume_doc.hyperlinks,
     )
     link_urls = [link.url for link in links]
+    resume_github_repo_urls = extract_github_repo_urls(link_urls)
     github_username = extract_github_username(link_urls)
+    if not github_username and resume_github_repo_urls:
+        github_username = resolve_github_username_from_repos(resume_github_repo_urls)
 
     # --- Kick off GitHub analysis in background thread (overlaps with Phase 2/3) ---
     github_repo_analyses: dict[str, Any] = {}
+    if resume_github_repo_urls:
+        github_repo_analyses["resume_github_repo_urls"] = resume_github_repo_urls
+    if github_username:
+        github_repo_analyses["username"] = github_username
     github_error: list[Exception] = []
 
     def _run_github_analysis(username: str, urls: list[str], jd_raw_text: str) -> None:
@@ -177,6 +187,7 @@ def prepare_screening_state(
         "jd_raw": jd_raw,
         "jd_structured": asdict(jd_structured),
         "profile_urls": link_urls,
+        "resume_profile_urls": list(link_urls),
         "profile_url_meta": [
             {"url": link.url, "source": link.source, "platform": link.platform} for link in links
         ],
@@ -186,8 +197,8 @@ def prepare_screening_state(
         "rubric_preamble": (f"{rubric_bundle['rubric_preamble']}\n{IDENTITY_SCORING_RULES}"),
         "profile_trust": assessments_to_dicts(profile_assessments),
         "profile_trust_by_url": profile_trust_by_url,
-        "identity_red_flags": build_identity_red_flags(profile_assessments),
-        "profile_identity_cap_score": should_cap_score_for_identity(profile_assessments),
+        "identity_red_flags": [],
+        "profile_identity_cap_score": False,
         "github_username": github_username,
         "github_repo_analyses": github_repo_analyses,
         "discovered_profile_urls": [],

@@ -6,6 +6,7 @@ from typing import Any
 from uuid import UUID
 
 from agent.prep_context import merge_with_prep_state
+from agent.enrichment import resume_profile_urls
 from agent.tools.rubric_builder import resolve_session_rubric
 from agent.tools.scorer import normalize_screening_result
 from agent.tools.validator import validate_result_detailed
@@ -53,10 +54,19 @@ def process_screening_submission(
             profile_identity_cap_score=bool(merged_state.get("profile_identity_cap_score")),
             github_repo_analyses=merged_state.get("github_repo_analyses"),
             profile_urls=list(merged_state.get("profile_urls") or []),
+            resume_profile_urls=resume_profile_urls(merged_state),
             profile_url_meta=list(merged_state.get("profile_url_meta") or []),
             jd_structured=merged_state.get("jd_structured") or {},
             resume_structured=merged_state.get("resume_structured") or {},
             discovered_github_repo_urls=list(merged_state.get("discovered_github_repo_urls") or []),
+            discovered_profile_urls=list(merged_state.get("discovered_profile_urls") or []),
+            profile_trust_by_url=dict(merged_state.get("profile_trust_by_url") or {}),
+            screening_mode=str(merged_state.get("screening_mode") or ""),
+            portfolio_role_category=merged_state.get("portfolio_role_category"),
+            portfolio_role_reasoning=merged_state.get("portfolio_role_reasoning"),
+            portfolio_role_source=merged_state.get("portfolio_role_source"),
+            portfolio_role_platforms=list(merged_state.get("portfolio_role_platforms") or []),
+            portfolio_role_label=merged_state.get("portfolio_role_label"),
         )
     except (ValueError, TypeError) as exc:
         return {"ok": False, "errors": [str(exc)]}

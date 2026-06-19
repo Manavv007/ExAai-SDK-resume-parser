@@ -120,7 +120,7 @@ def test_chaos_repo_has_critical_ceiling(deterministic_sandbox_scoring) -> None:
 def test_combined_penalty_matches_candidate_example(deterministic_sandbox_scoring) -> None:
     reports = [_healthy_repo_report(), _fitness_repo_report(), _chaos_repo_report()]
     penalty = compute_sandbox_score_penalty(reports)
-    assert 10 <= penalty <= 15
+    assert penalty == 10
     assert compute_sandbox_score_ceiling(reports) == 85
 
 
@@ -145,7 +145,7 @@ def test_apply_sandbox_score_penalty_applies_when_llm_scoring_enabled(
         },
     )
     assert reduction > 0
-    assert 78 <= adjusted <= 83
+    assert 78 <= adjusted <= 85
 
 
 def test_apply_sandbox_score_penalty_reduces_high_llm_score(deterministic_sandbox_scoring) -> None:
@@ -289,7 +289,7 @@ def test_normalize_screening_result_applies_sandbox_penalty(deterministic_sandbo
     score = normalized["resume_similarity_score"]["score"]
     breakdown = normalized.get("evaluation_breakdown") or {}
     assert breakdown.get("final_score_source") == "evaluation_composite"
-    assert 10 <= int(breakdown.get("sandbox_penalty") or 0) <= 15
+    assert int(breakdown.get("sandbox_penalty") or 0) == 10
     assert score < 77
     assert normalized["recommendation"] == "hold"
     reasoning = normalized["resume_similarity_score"]["reasoning"]

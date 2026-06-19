@@ -107,8 +107,10 @@ RoleCategory = Literal[
     "aiml",
     "data_science",
     "design",
+    "ux_engineering",
     "research_academic",
     "non_portfolio",
+    "custom",  # LLM-inferred: platforms sourced from JD parse + agent override
 ]
 
 VALID_ROLE_CATEGORIES: frozenset[str] = frozenset(
@@ -117,13 +119,18 @@ VALID_ROLE_CATEGORIES: frozenset[str] = frozenset(
         "aiml",
         "data_science",
         "design",
+        "ux_engineering",
         "research_academic",
         "non_portfolio",
+        "custom",
     }
 )
 
+# Categories that do NOT require a portfolio (no penalty applies)
+NON_PORTFOLIO_ROLE_CATEGORIES: frozenset[str] = frozenset({"non_portfolio"})
+
 _HARD_CAP_ROLE_CATEGORIES: frozenset[str] = frozenset(
-    {"software_engineering", "aiml", "design"}
+    {"software_engineering", "aiml", "design", "ux_engineering"}
 )
 _NONE_SIGNAL_HARD_CAP = 75
 
@@ -165,6 +172,46 @@ _GENERIC_DOMAINS: frozenset[str] = frozenset(
     }
 )
 
+CODE_EVIDENCE_ROLE_CATEGORIES: frozenset[str] = frozenset(
+    {
+        "software_engineering",
+        "aiml",
+        "data_science",
+        "research_academic",
+    }
+)
+
+PORTFOLIO_ROLE_OPTIONS_TEXT = """\
+Portfolio role categories (call classify_portfolio_role after reading the JD):
+- ux_engineering: UX/UI Engineer, design+code hybrid roles — verify GitHub/GitLab/Bitbucket OR Behance/Dribbble/Figma (either satisfies)
+- design: UX/UI/product/visual design (design-first) — verify Behance/Dribbble/Figma
+- software_engineering: SDE/backend/frontend/devops/full stack (code-first) — verify GitHub/GitLab/Bitbucket
+- aiml: ML/AI engineering — verify GitHub/GitLab/Kaggle
+- data_science: analytics/data science — verify Kaggle/GitHub
+- research_academic: research/postdoc/faculty — verify Scholar/ORCID/ResearchGate
+- non_portfolio: HR/sales/PM/ops — no portfolio platform requirement
+- custom: any role not covered above (embedded systems, game dev, quant, blockchain, etc.) —
+  pass portfolio_platforms=["github.com", ...] listing the domains where proof-of-work
+  for this specific role would live. The agent's platforms are COMBINED with any platforms
+  already extracted from the JD at parse time; the candidate needs AT LEAST ONE.
+
+IMPORTANT: Job titles like "UX Engineer" or "UI Engineer" are ux_engineering, NOT software_engineering,
+even when the JD lists React/Node/Python. A Behance or Figma portfolio satisfies proof-of-work.
+
+For unusual roles (Blockchain Dev, Game Dev, Embedded SW, Quant Analyst, etc.),
+use role_category="custom" and supply portfolio_platforms explicitly.
+"""
+
+_UX_ENGINEER_TITLE_MARKERS: tuple[str, ...] = (
+    "ux engineer",
+    "ui engineer",
+    "ux/ui engineer",
+    "design engineer",
+    "ux intern",
+    "ui intern",
+    "ux designer engineer",
+)
+
 _ROLE_CONFIGS: dict[str, dict[str, Any]] = {
     "software_engineering": {
         "required_platforms": ("github.com", "gitlab.com", "bitbucket.org"),
@@ -186,6 +233,18 @@ _ROLE_CONFIGS: dict[str, dict[str, Any]] = {
         "penalty_label": "No verifiable design portfolio (Behance/Dribbble/Figma)",
         "base_penalty": 15,
     },
+    "ux_engineering": {
+        "required_platforms": (
+            "github.com",
+            "gitlab.com",
+            "bitbucket.org",
+            "behance.net",
+            "dribbble.com",
+            "figma.com",
+        ),
+        "penalty_label": "No verifiable portfolio (code host or design platform)",
+        "base_penalty": 15,
+    },
     "research_academic": {
         "required_platforms": (
             "github.com",
@@ -202,7 +261,46 @@ _ROLE_CONFIGS: dict[str, dict[str, Any]] = {
         "penalty_label": "No portfolio requirements for this role category",
         "base_penalty": 0,
     },
+    # 'custom' is resolved dynamically via build_dynamic_role_config() — not stored here
 }
+
+
+_CODE_HOST_DOMAINS: frozenset[str] = frozenset(
+    {"github.com", "gitlab.com", "bitbucket.org", "codeberg.org"}
+)
+
+
+def build_dynamic_role_config(
+    role_label: str | None,
+    portfolio_platforms: list[str],
+) -> dict[str, Any]:
+    """Build a role config dict for the 'custom' category from LLM-extracted platform data.
+
+    This replaces the hardcoded _ROLE_CONFIGS lookup for unpopular or niche roles
+    (e.g. Embedded Systems Engineer, Game Developer, Quant Analyst, Blockchain Dev).
+    The platform list is assembled from the JD parse (LLM) and/or agent tool call
+    and the candidate must have AT LEAST ONE of the listed platforms.
+    """
+    platforms = tuple(str(p).strip().lower() for p in (portfolio_platforms or []) if p)
+    label = str(role_label or "this role").strip()
+    if not platforms:
+        # No platforms means no portfolio penalty (graceful fallback)
+        return {
+            "required_platforms": (),
+            "penalty_label": "No portfolio requirements specified for this role",
+            "base_penalty": 0,
+        }
+    platform_display = "/".join(
+        p.replace(".com", "").replace(".net", "").replace(".org", "").replace(".io", "").upper()
+        for p in platforms[:3]
+    )
+    if len(platforms) > 3:
+        platform_display += f" (+ {len(platforms) - 3} more)"
+    return {
+        "required_platforms": platforms,
+        "penalty_label": f"No verifiable portfolio for {label} ({platform_display})",
+        "base_penalty": 15,
+    }
 
 _CRAWL_ERROR_SIGNATURES: tuple[str, ...] = (
     "cloudflare",
@@ -285,26 +383,157 @@ _SOFTWARE_HINTS: tuple[str, ...] = (
 )
 
 
-def normalize_role_category(value: str | None) -> RoleCategory:
-    """Coerce arbitrary role labels to a supported category."""
-    cleaned = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
-    aliases = {
-        "software": "software_engineering",
-        "engineering": "software_engineering",
-        "swe": "software_engineering",
-        "ml": "aiml",
-        "ai_ml": "aiml",
-        "machine_learning": "aiml",
-        "data": "data_science",
-        "research": "research_academic",
-        "academic": "research_academic",
-        "none": "non_portfolio",
-        "general": "non_portfolio",
-    }
-    cleaned = aliases.get(cleaned, cleaned)
+_ROLE_CATEGORY_ALIASES: dict[str, str] = {
+    "software": "software_engineering",
+    "engineering": "software_engineering",
+    "swe": "software_engineering",
+    "ml": "aiml",
+    "ai_ml": "aiml",
+    "machine_learning": "aiml",
+    "data": "data_science",
+    "research": "research_academic",
+    "academic": "research_academic",
+    "ux": "ux_engineering",
+    "ux_engineer": "ux_engineering",
+    "ui_engineer": "ux_engineering",
+    "none": "non_portfolio",
+    "general": "non_portfolio",
+}
+
+
+def _clean_role_category_token(value: str | None) -> str:
+    return str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+
+
+def parse_role_category(value: str | None) -> RoleCategory | None:
+    """Return a supported category or None when the label is not recognized."""
+    cleaned = _clean_role_category_token(value)
+    if not cleaned:
+        return None
+    cleaned = _ROLE_CATEGORY_ALIASES.get(cleaned, cleaned)
     if cleaned in VALID_ROLE_CATEGORIES:
         return cleaned  # type: ignore[return-value]
+    return None
+
+
+def normalize_role_category(value: str | None) -> RoleCategory:
+    """Coerce arbitrary role labels to a supported category."""
+    parsed = parse_role_category(value)
+    if parsed is not None:
+        return parsed
     return "non_portfolio"
+
+
+def resolve_portfolio_role_category(
+    *,
+    session_state: dict[str, Any] | None = None,
+    screening_mode: str | None = None,
+    portfolio_role_category: str | None = None,
+) -> RoleCategory:
+    """Portfolio enforcement category: agent decision in agent mode, else no penalty."""
+    mode = str(
+        screening_mode or (session_state or {}).get("screening_mode") or "pipeline"
+    ).strip().lower()
+    if mode != "agent":
+        return "non_portfolio"
+
+    raw = portfolio_role_category or (session_state or {}).get("portfolio_role_category")
+    if isinstance(raw, str) and raw.strip():
+        return normalize_role_category(raw)
+    return "non_portfolio"
+
+
+def build_portfolio_role_tool_response(
+    category: RoleCategory,
+    combined_platforms: list[str] | None = None,
+    role_label: str | None = None,
+) -> dict[str, Any]:
+    """Structured guidance returned by classify_portfolio_role."""
+    config = _ROLE_CONFIGS.get(category)
+    if config is None:
+        # 'custom' category: build config from combined platform list
+        config = build_dynamic_role_config(role_label, combined_platforms or [])
+    guidance_by_category: dict[str, str] = {
+        "software_engineering": (
+            "Fetch GitHub/GitLab/Bitbucket profiles from the resume. "
+            "Run get_github_repo_structures and sandbox when repos exist."
+        ),
+        "aiml": (
+            "Fetch GitHub/Kaggle profiles. Sandbox ML/code repos when they support JD fit."
+        ),
+        "data_science": (
+            "Fetch Kaggle/GitHub notebook or analysis repos when listed on the resume."
+        ),
+        "ux_engineering": (
+            "Hybrid UX/UI engineering: fetch Behance/Dribbble/Figma OR GitHub from the resume. "
+            "Either proof type satisfies the portfolio requirement. Sandbox is optional."
+        ),
+        "design": (
+            "Fetch Behance/Dribbble/Figma or personal portfolio sites. "
+            "GitHub and sandbox are optional — do not penalize missing code repos."
+        ),
+        "research_academic": (
+            "Fetch Google Scholar/ORCID/ResearchGate links. GitHub is optional."
+        ),
+        "non_portfolio": (
+            "No portfolio platform penalty applies. Focus on resume and LinkedIn evidence."
+        ),
+        "custom": (
+            f"Custom role ({role_label or 'see role_label'}): fetch URLs matching any of the "
+            f"listed required_platforms. Candidate needs AT LEAST ONE to avoid penalty."
+        ),
+    }
+    required_platforms = (
+        list(combined_platforms) if category == "custom" and combined_platforms
+        else list(config["required_platforms"])
+    )
+    return {
+        "ok": True,
+        "role_category": category,
+        "role_label": role_label,
+        "required_platforms": required_platforms,
+        "penalty_label": config["penalty_label"],
+        "base_penalty": int(config["base_penalty"]),
+        "code_evidence_required": category in CODE_EVIDENCE_ROLE_CATEGORIES,
+        "evidence_guidance": guidance_by_category.get(category, guidance_by_category["non_portfolio"]),
+    }
+
+
+
+def enrich_portfolio_signal_metadata(
+    signal: dict[str, Any],
+    *,
+    screening_mode: str | None = None,
+    portfolio_role_reasoning: str | None = None,
+    portfolio_role_source: str | None = None,
+) -> dict[str, Any]:
+    """Attach agent classification provenance to portfolio_signal output."""
+    enriched = dict(signal)
+    mode = str(screening_mode or "pipeline").strip().lower()
+    if mode == "agent" and portfolio_role_source == "agent":
+        enriched["role_category_source"] = "agent"
+        reasoning = str(portfolio_role_reasoning or "").strip()
+        enriched["role_category_reasoning"] = reasoning or None
+    else:
+        enriched["role_category_source"] = "skipped_pipeline"
+        enriched["role_category_reasoning"] = None
+    return enriched
+
+
+def portfolio_category_mismatch_for_title(
+    job_title: str | None,
+    category: RoleCategory,
+) -> str | None:
+    """Reject common agent misclassification of UX/UI engineer titles as pure SWE."""
+    title = f" {str(job_title or '').lower()} "
+    if not any(marker in title for marker in _UX_ENGINEER_TITLE_MARKERS):
+        return None
+    if category == "software_engineering":
+        return (
+            "Job title indicates UX/UI engineering. Use ux_engineering or design — not "
+            "software_engineering. Behance/Figma portfolios satisfy proof-of-work for these roles."
+        )
+    return None
 
 
 def infer_role_category(
@@ -401,6 +630,22 @@ def _url_path_depth(url: str) -> int:
         return len([s for s in urlparse(url).path.split("/") if s])
     except Exception:
         return 99
+
+
+def _select_personal_portfolio_url(urls: list[str]) -> str | None:
+    """Pick the best custom-domain portfolio root; never portfolio-wrapped GitHub/LinkedIn paths."""
+    from agent.tools.link_extractor import has_embedded_external_profile_path
+
+    candidates: list[str] = []
+    for url in urls:
+        if not url or not is_personal_website(url):
+            continue
+        if has_embedded_external_profile_path(url):
+            continue
+        candidates.append(url)
+    if not candidates:
+        return None
+    return min(candidates, key=_url_path_depth)
 
 
 def _count_github_repo_urls(content: str) -> int:
@@ -757,10 +1002,44 @@ def evaluate_portfolio_signal(
     experience_years: int = 0,
     resume_structured: dict[str, Any] | None = None,
     github_repo_analyses: dict[str, Any] | None = None,
+    extra_platforms: list[str] | None = None,
+    role_label: str | None = None,
 ) -> dict[str, Any]:
-    """Evaluate portfolio footprint and compute deterministic penalty metadata."""
+    """Evaluate portfolio footprint and compute deterministic penalty metadata.
+
+    For the 'custom' role category, the effective required platform list is the
+    union of ``extra_platforms`` (from classify_portfolio_role tool call) and any
+    platforms extracted from the JD at parse time.  The candidate needs AT LEAST
+    ONE of those platforms to avoid a penalty.
+    """
     category = normalize_role_category(role_category)
-    config = _ROLE_CONFIGS.get(category, _ROLE_CONFIGS["non_portfolio"])
+
+    # Resolve the platform config: custom category uses the dynamic builder;
+    # all other categories fall back to the static _ROLE_CONFIGS lookup.
+    if category == "custom":
+        combined_platforms = list(dict.fromkeys(
+            str(p).strip().lower()
+            for p in (extra_platforms or [])
+            if str(p).strip()
+        ))
+        config = build_dynamic_role_config(role_label, combined_platforms)
+    else:
+        config = _ROLE_CONFIGS.get(category, _ROLE_CONFIGS["non_portfolio"])
+        # Merge extra_platforms from agent/parse into the standard set when provided
+        if extra_platforms:
+            merged = list(config["required_platforms"]) + [
+                str(p).strip().lower() for p in extra_platforms if str(p).strip()
+            ]
+            # deduplicate preserving order
+            seen_p: set[str] = set()
+            deduped: list[str] = []
+            for p in merged:
+                if p not in seen_p:
+                    seen_p.add(p)
+                    deduped.append(p)
+            config = dict(config)
+            config["required_platforms"] = tuple(deduped)
+
     required: tuple[str, ...] = tuple(config["required_platforms"])
 
     if isinstance(enriched_contents, dict):
@@ -810,8 +1089,7 @@ def evaluate_portfolio_signal(
         for platform in required:
             if platform in url_lower and platform not in found_required:
                 found_required.append(platform)
-        if is_personal_website(url):
-            personal_portfolio_url = url
+    personal_portfolio_url = _select_personal_portfolio_url(normalized_urls)
 
     crawl_status_log: dict[str, str] = {}
 
@@ -859,6 +1137,7 @@ def evaluate_portfolio_signal(
         final_penalty = base_penalty
     result = {
         "role_category": category,
+        "role_label": role_label,
         "required_platforms_found": found_required,
         "required_platforms_missing": missing_platforms,
         "penalty_points": final_penalty,
@@ -944,10 +1223,21 @@ def apply_portfolio_penalties(
 
     category = str(portfolio_signal.get("role_category") or "")
     found_required = portfolio_signal.get("required_platforms_found") or []
-    if not found_required and category in _HARD_CAP_ROLE_CATEGORIES:
-        if adjusted > _NONE_SIGNAL_HARD_CAP:
-            adjusted = _NONE_SIGNAL_HARD_CAP
-            hard_cap_applied = True
+    # For 'custom' roles: apply hard-cap only when ALL required platforms are code hosts.
+    # This mirrors the existing hard-cap behaviour for known hard-cap categories.
+    if not found_required:
+        if category in _HARD_CAP_ROLE_CATEGORIES:
+            if adjusted > _NONE_SIGNAL_HARD_CAP:
+                adjusted = _NONE_SIGNAL_HARD_CAP
+                hard_cap_applied = True
+        elif category == "custom":
+            required_platforms = portfolio_signal.get("required_platforms_missing") or []
+            all_code_hosts = bool(required_platforms) and all(
+                any(ch in p for ch in _CODE_HOST_DOMAINS) for p in required_platforms
+            )
+            if all_code_hosts and adjusted > _NONE_SIGNAL_HARD_CAP:
+                adjusted = _NONE_SIGNAL_HARD_CAP
+                hard_cap_applied = True
 
     applied = max(0, score - adjusted)
     return adjusted, applied, hard_cap_applied

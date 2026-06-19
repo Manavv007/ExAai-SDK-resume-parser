@@ -5,6 +5,7 @@ import pytest
 from agent.agent_runner import (
     SCREENING_AGENT_INSTRUCTION,
     _run_heuristic_sandbox_fallback_if_needed,
+    _session_ready_for_pipeline_fallback,
     build_agent_user_message,
     seed_screening_session,
 )
@@ -16,9 +17,12 @@ def test_screening_instruction_references_trust_tiers() -> None:
     assert "profile_trust_by_url" in SCREENING_AGENT_INSTRUCTION
     assert "scoring_untrusted" in lowered
     assert "submit_screening_result" in lowered
+    assert "classify_portfolio_role" in lowered
     assert "fetch_profiles" in lowered
+    assert "discovery-only" in lowered or "discovery_only" in lowered
+    assert "github_api_repo_urls" in lowered
+    assert "exa_fetchable_discovered_urls" in lowered
     assert "design" in lowered
-    assert "role_category" in lowered
     assert "focus_paths" in lowered
 
 
@@ -61,7 +65,9 @@ def test_build_agent_user_message_includes_screening_context() -> None:
     message = build_agent_user_message(state)
 
     assert "11111111-1111-4111-8111-111111111111" in message
-    assert "ROLE_CATEGORY:" in message
+    assert "PORTFOLIO_ROLE_OPTIONS" in message
+    assert "classify_portfolio_role" in message
+    assert "ROLE_CATEGORY:" not in message
     assert "Python engineer" in message
     assert "Senior Python Backend Engineer" in message
     assert "profile_trust_by_url" in message.lower() or "PROFILE_TRUST_BY_URL" in message
@@ -72,7 +78,25 @@ def test_build_agent_user_message_includes_screening_context() -> None:
     assert "submit_screening_result" in message
     assert "SUBMIT_PAYLOAD_SHAPE" in message
     assert "FINAL STEP" in message
-    assert json.loads(message.split("PROFILE_TRUST_BY_URL:\n", 1)[1].split("\n\nJOB", 1)[0])
+
+
+def test_build_agent_user_message_includes_portfolio_discovery_workflow() -> None:
+    state = {
+        "application_id": "11111111-1111-4111-8111-111111111111",
+        "job_id": "22222222-2222-4222-8222-222222222222",
+        "resume_text": "Designer portfolio at https://janedoe.dev",
+        "jd_raw": "Product Designer",
+        "rubric_preamble": "",
+        "rubric": [],
+        "profile_urls": ["https://janedoe.dev/portfolio"],
+        "resume_profile_urls": ["https://janedoe.dev/portfolio"],
+        "profile_trust_by_url": {"https://janedoe.dev/portfolio": "scoring_trusted"},
+        "identity_red_flags": [],
+    }
+    message = build_agent_user_message(state)
+    assert "PORTFOLIO_DISCOVERY_WORKFLOW" in message
+    assert "discovery-only" in message.lower()
+    assert "analyze_github" in message
 
 
 def test_build_agent_user_message_pending_sandbox_when_overlap(
@@ -111,7 +135,7 @@ def test_build_agent_user_message_pending_sandbox_when_overlap(
     assert "evaluation in progress" in message.lower()
 
 
-def test_build_agent_user_message_notes_identity_cap() -> None:
+def test_build_agent_user_message_omits_identity_red_flags() -> None:
     state = {
         "application_id": "11111111-1111-4111-8111-111111111111",
         "job_id": "22222222-2222-4222-8222-222222222222",
@@ -133,8 +157,9 @@ def test_build_agent_user_message_notes_identity_cap() -> None:
 
     message = build_agent_user_message(state)
 
-    assert "capped at 45" in message
-    assert "profile_identity_mismatch" in message
+    assert "capped at 45" not in message
+    assert "profile_identity_mismatch" not in message
+    assert "IDENTITY RED FLAGS" not in message
 
 
 @pytest.mark.asyncio
@@ -203,3 +228,26 @@ async def test_run_heuristic_sandbox_fallback_if_needed(
         ran = await _run_heuristic_sandbox_fallback_if_needed(prep, session)
 
     assert ran is True
+
+
+def test_session_ready_for_pipeline_fallback_requires_classification() -> None:
+    assert _session_ready_for_pipeline_fallback({}) is False
+    assert _session_ready_for_pipeline_fallback({"portfolio_role_category": ""}) is False
+
+
+def test_session_ready_for_pipeline_fallback_non_code_role() -> None:
+    state = {"portfolio_role_category": "design"}
+    assert _session_ready_for_pipeline_fallback(state) is True
+
+
+def test_session_ready_for_pipeline_fallback_code_role_needs_sandbox() -> None:
+    state = {
+        "portfolio_role_category": "software_engineering",
+        "github_repo_analyses": {
+            "selected_sandbox_repo_urls": ["https://github.com/dev/service"],
+        },
+    }
+    assert _session_ready_for_pipeline_fallback(state) is False
+
+    state["github_repo_analyses"]["sandbox_reports"] = [{"repo": "dev/service"}]
+    assert _session_ready_for_pipeline_fallback(state) is True

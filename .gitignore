@@ -25,3 +25,10 @@ data/
 # OS
 .DS_Store
 Thumbs.db
+# OpenCode plugin deps (keep agent configs, skip node_modules)
+.opencode/node_modules/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/

@@ -11,9 +11,11 @@ from google.adk.tools.tool_context import ToolContext
 
 from agent.config import get_settings
 from agent.enrichment import (
+    exa_fetchable_discovered_profile_urls,
     fetch_budget_remaining,
     fetch_profile_url,
     fetch_profile_urls_batch_async,
+    github_api_repo_urls,
     suggested_next_profile_urls,
 )
 from agent.logging_config import trace_event
@@ -28,7 +30,15 @@ from agent.tools.github_analyzer import (
     merge_github_repo_urls,
     normalize_github_repo_url,
     resolve_github_username,
+    resolve_github_username_with_source,
     sync_github_identity,
+)
+from agent.tools.portfolio_signal import (
+    PORTFOLIO_ROLE_OPTIONS_TEXT,
+    VALID_ROLE_CATEGORIES,
+    build_portfolio_role_tool_response,
+    parse_role_category,
+    portfolio_category_mismatch_for_title,
 )
 from agent.tools.repo_focus import (
     build_repo_structure_summary,
@@ -141,9 +151,14 @@ def list_candidate_profile_urls(tool_context: ToolContext) -> dict[str, Any]:
         "trust_by_url": tool_context.state.get("profile_trust_by_url") or {},
         "discovered_profile_urls": tool_context.state.get("discovered_profile_urls") or [],
         "discovered_github_repo_urls": tool_context.state.get("discovered_github_repo_urls") or [],
+        "exa_fetchable_discovered_urls": exa_fetchable_discovered_profile_urls(
+            tool_context.state
+        ),
+        "github_api_repo_urls": github_api_repo_urls(tool_context.state),
         "suggested_next_urls": suggested_next_profile_urls(tool_context.state),
         "github_username": tool_context.state.get("github_username"),
         "fetch_budget_remaining": fetch_budget_remaining(tool_context.state),
+        "portfolio_discovery_completed": bool(tool_context.state.get("portfolio_discovery_completed")),
         "count": len(urls),
     }
     _tool_end("list_candidate_profile_urls", tool_context.state, started, url_count=len(urls))
@@ -198,6 +213,7 @@ async def fetch_profiles(
     urls: list[str],
     tool_context: ToolContext,
     auto_follow_discovered: bool = False,
+    discovery_only: bool | None = None,
 ) -> dict[str, Any]:
     """
     Crawl allowlisted profile URLs via Exa (batch).
@@ -206,16 +222,28 @@ async def fetch_profiles(
     marked scoring_untrusted. Total unique fetches per session are capped at
     max_urls_per_resume.
 
-    By default discovered links are stored in session (`discovered_profile_urls`,
-    `discovered_github_repo_urls`) for you to fetch in a follow-up call.
-    High-value profile URLs (LinkedIn, GitHub profile) are auto-fetched when budget
-    allows. Set auto_follow_discovered=true to auto-crawl all discovered non-GitHub links.
+    Two-phase portfolio workflow (recommended when the resume lists one portfolio URL):
+    1) fetch_profiles([portfolio_url]) — auto discovery-only: crawl the page, extract
+       links into exa_fetchable_discovered_urls and github_api_repo_urls, no follow-up Exa.
+    2) fetch_profiles([...JD-relevant profile URLs...]) — one Exa batch for profiles only.
+       Never pass GitHub/GitLab repo URLs here; use analyze_github for github_api_repo_urls.
+
+    Set discovery_only=true/false to override auto detection. Set auto_follow_discovered=true
+    to auto-crawl all discovered non-GitHub links in one call (legacy).
     """
+    from agent.enrichment import resolve_discovery_only_mode
+
+    use_discovery_only = resolve_discovery_only_mode(
+        tool_context.state,
+        urls,
+        discovery_only=discovery_only,
+    )
     started = _tool_start(
         "fetch_profiles",
         tool_context.state,
         requested_count=len(urls) if isinstance(urls, list) else -1,
         auto_follow_discovered=auto_follow_discovered,
+        discovery_only=use_discovery_only,
     )
     if not isinstance(urls, list):
         result = {
@@ -235,6 +263,7 @@ async def fetch_profiles(
         tool_context.state,
         urls,
         auto_follow_discovered=auto_follow_discovered,
+        discovery_only=discovery_only,
     )
     register_prep_state(tool_context.state)
     _tool_end(
@@ -252,6 +281,147 @@ async def fetch_profiles(
     return result
 
 
+async def classify_portfolio_role(
+    role_category: str,
+    reasoning: str,
+    tool_context: ToolContext,
+    portfolio_platforms: list[str] | None = None,
+    role_label: str | None = None,
+) -> dict[str, Any]:
+    """
+    Classify the JD into a portfolio role category before gathering evidence.
+
+    Read the job description and decide which category best matches the role's
+    proof-of-work expectations (code repos vs design portfolio vs research profile).
+    Call this before fetch_profiles. Required before submit_screening_result.
+
+    For common roles use one of the standard categories:
+      software_engineering, aiml, data_science, design, ux_engineering,
+      research_academic, non_portfolio
+
+    For niche/unusual roles (Embedded Systems, Game Dev, Blockchain, Quant
+    Analyst, Bioinformatician, Security Researcher, etc.) use:
+      role_category="custom"
+      portfolio_platforms=["github.com", "itch.io"]  # platforms relevant to this role
+      role_label="Game Developer"  # human-readable role name
+
+    TIP: Check jd_structured.portfolio_platforms in the screening brief first —
+    the JD parser may have already extracted the right platforms. You can pass
+    them as portfolio_platforms here; they will be combined with any defaults.
+
+    The candidate needs AT LEAST ONE of the combined platform URLs to avoid a penalty.
+    """
+    started = _tool_start("classify_portfolio_role", tool_context.state)
+    cleaned_reasoning = str(reasoning or "").strip()
+    if not cleaned_reasoning:
+        result = {
+            "ok": False,
+            "error": "missing_reasoning",
+            "message": "Provide a short reasoning string explaining the classification.",
+        }
+        _tool_end(
+            "classify_portfolio_role",
+            tool_context.state,
+            started,
+            status="error",
+            error=result["error"],
+        )
+        return result
+
+    parsed = parse_role_category(role_category)
+    if parsed is None:
+        valid = ", ".join(sorted(VALID_ROLE_CATEGORIES))
+        result = {
+            "ok": False,
+            "error": "invalid_role_category",
+            "message": f"role_category must be one of: {valid}",
+            "valid_categories": sorted(VALID_ROLE_CATEGORIES),
+            "portfolio_role_options": PORTFOLIO_ROLE_OPTIONS_TEXT.strip(),
+        }
+        _tool_end(
+            "classify_portfolio_role",
+            tool_context.state,
+            started,
+            status="error",
+            error=result["error"],
+        )
+        return result
+
+    jd_structured = tool_context.state.get("jd_structured")
+    job_title = ""
+    if isinstance(jd_structured, dict):
+        job_title = str(jd_structured.get("job_title") or "").strip()
+    if not job_title:
+        job_title = str(tool_context.state.get("jd_raw") or "").split("\n", 1)[0].strip()
+
+    # Only run the UX title mismatch guard for non-custom categories
+    if parsed != "custom":
+        mismatch = portfolio_category_mismatch_for_title(job_title, parsed)
+        if mismatch:
+            result = {
+                "ok": False,
+                "error": "role_category_mismatch",
+                "message": mismatch,
+                "suggested_categories": ["ux_engineering", "design"],
+                "portfolio_role_options": PORTFOLIO_ROLE_OPTIONS_TEXT.strip(),
+            }
+            _tool_end(
+                "classify_portfolio_role",
+                tool_context.state,
+                started,
+                status="error",
+                error=result["error"],
+            )
+            return result
+
+    # --- Combine portfolio platforms from multiple sources ---
+    # Source 1: platforms extracted by the LLM at JD parse time
+    jd_platforms: list[str] = []
+    if isinstance(jd_structured, dict):
+        raw_jd_platforms = jd_structured.get("portfolio_platforms")
+        if isinstance(raw_jd_platforms, list):
+            jd_platforms = [str(p).strip().lower() for p in raw_jd_platforms if str(p).strip()]
+
+    # Source 2: platforms explicitly provided by the agent via this tool call
+    agent_platforms: list[str] = []
+    if isinstance(portfolio_platforms, list):
+        agent_platforms = [str(p).strip().lower() for p in portfolio_platforms if str(p).strip()]
+
+    # Combine: deduplicate while preserving order (agent platforms listed first)
+    seen_plat: set[str] = set()
+    combined_platforms: list[str] = []
+    for p in agent_platforms + jd_platforms:
+        if p and p not in seen_plat:
+            seen_plat.add(p)
+            combined_platforms.append(p)
+
+    # Resolve role_label: prefer explicit arg > jd_structured.role_label > job_title
+    resolved_label: str | None = (
+        str(role_label or "").strip()
+        or (str(jd_structured.get("role_label") or "") if isinstance(jd_structured, dict) else "")
+        or job_title
+        or None
+    )
+
+    tool_context.state["portfolio_role_category"] = parsed
+    tool_context.state["portfolio_role_reasoning"] = cleaned_reasoning[:500]
+    tool_context.state["portfolio_role_source"] = "agent"
+    tool_context.state["portfolio_role_label"] = resolved_label
+    tool_context.state["portfolio_role_platforms"] = combined_platforms
+    register_prep_state(tool_context.state)
+
+    result = build_portfolio_role_tool_response(parsed, combined_platforms, resolved_label)
+    result["reasoning"] = cleaned_reasoning[:500]
+    _tool_end(
+        "classify_portfolio_role",
+        tool_context.state,
+        started,
+        role_category=parsed,
+    )
+    return result
+
+
+
 async def submit_screening_result(
     result: dict[str, Any],
     tool_context: ToolContext,
@@ -260,13 +430,33 @@ async def submit_screening_result(
     Submit final resume-screening-result-v1 JSON for validation and storage.
 
     Pass the scoring payload (resume_similarity_score, requirement_matches,
-    recommendation, recommendation_reasoning, red_flags). Session IDs, metadata,
+    recommendation, recommendation_reasoning). Session IDs, metadata,
     sources_crawled, and score caps are applied automatically.
 
     If validation fails, read ``errors`` and fix the payload before resubmitting.
     """
     started = _tool_start("submit_screening_result", tool_context.state)
     merged_state = merge_with_prep_state(tool_context.state)
+    screening_mode = str(merged_state.get("screening_mode") or "").strip().lower()
+    if screening_mode == "agent" and not str(
+        tool_context.state.get("portfolio_role_category") or ""
+    ).strip():
+        outcome = {
+            "ok": False,
+            "errors": ["Call classify_portfolio_role before submit_screening_result."],
+            "message": (
+                "Portfolio role classification is required. "
+                "Call classify_portfolio_role after reading the JD, then gather evidence."
+            ),
+        }
+        _tool_end(
+            "submit_screening_result",
+            tool_context.state,
+            started,
+            status="error",
+            error=outcome["errors"][0],
+        )
+        return outcome
     if not agent_evidence_orchestration_active():
         await await_sandbox_for_scoring(merged_state)
     elif _github_repo_urls_from_state(merged_state) and not _has_sandbox_reports(merged_state):
@@ -736,9 +926,16 @@ async def get_github_repo_structures(tool_context: ToolContext) -> dict[str, Any
     started = _tool_start("get_github_repo_structures", tool_context.state)
     state = merge_with_prep_state(tool_context.state)
     sync_github_identity(state)
+    github = state.get("github_repo_analyses")
+    if not isinstance(github, dict) or not github.get("username"):
+        repo_urls_for_identity = _github_repo_urls_from_state(state)
+        if repo_urls_for_identity:
+            from agent.tools.github_analyzer import ensure_minimal_github_shell_from_repos
+
+            ensure_minimal_github_shell_from_repos(state, repo_urls_for_identity)
+            github = state.get("github_repo_analyses")
     tool_context.state["github_username"] = state.get("github_username")
     tool_context.state["github_repo_analyses"] = state.get("github_repo_analyses")
-    github = state.get("github_repo_analyses")
     if not isinstance(github, dict) or not github.get("username"):
         result = {
             "ok": False,
@@ -887,8 +1084,16 @@ async def analyze_github(tool_context: ToolContext) -> dict[str, Any]:
     repos. The resulting analysis is saved in the session and used in final scoring.
     """
     started = _tool_start("analyze_github", tool_context.state)
-    sync_github_identity(tool_context.state)
-    github_username = resolve_github_username(tool_context.state)
+    state = merge_with_prep_state(tool_context.state)
+    sync_github_identity(state)
+    github_username, username_source = resolve_github_username_with_source(state)
+    if github_username:
+        state["github_username"] = github_username
+        if username_source:
+            state["github_username_source"] = username_source
+    tool_context.state["github_username"] = state.get("github_username")
+    tool_context.state["github_repo_analyses"] = state.get("github_repo_analyses")
+    tool_context.state["discovered_github_repo_urls"] = state.get("discovered_github_repo_urls")
     if not github_username:
         result = {
             "ok": False,
@@ -905,15 +1110,16 @@ async def analyze_github(tool_context: ToolContext) -> dict[str, Any]:
         return result
 
     tool_context.state["github_username"] = github_username
-    github_repo_analyses = tool_context.state.get("github_repo_analyses")
+    github_repo_analyses = state.get("github_repo_analyses")
     if (
         github_repo_analyses
         and github_repo_analyses.get("repo_analyses")
-        and not _github_analysis_needs_refresh(tool_context.state, github_username)
+        and not _github_analysis_needs_refresh(state, github_username)
     ):
         result = {
             "ok": True,
             "username": github_username,
+            "username_source": state.get("github_username_source"),
             "message": "GitHub repository analysis is already complete and stored in the session.",
             "overall_github_signal": github_repo_analyses.get("overall_github_signal"),
             "coding_style_summary": github_repo_analyses.get("coding_style_summary"),
@@ -924,9 +1130,9 @@ async def analyze_github(tool_context: ToolContext) -> dict[str, Any]:
     from agent.tools.github_analyzer import analyze_github_repos
 
     try:
-        profile_urls = tool_context.state.get("profile_urls") or []
-        discovered_repo_urls = tool_context.state.get("discovered_github_repo_urls") or []
-        jd_structured = tool_context.state.get("jd_structured") or {}
+        profile_urls = state.get("profile_urls") or []
+        discovered_repo_urls = state.get("discovered_github_repo_urls") or []
+        jd_structured = state.get("jd_structured") or {}
         from agent.sandbox_gating import sandbox_mode_for_settings
 
         analysis = await analyze_github_repos(
@@ -936,11 +1142,13 @@ async def analyze_github(tool_context: ToolContext) -> dict[str, Any]:
             jd_structured=jd_structured,
             sandbox_mode=sandbox_mode_for_settings(),
         )
+        state["github_repo_analyses"] = analysis
         tool_context.state["github_repo_analyses"] = analysis
         register_prep_state(tool_context.state)
         result = {
             "ok": True,
             "username": github_username,
+            "username_source": state.get("github_username_source"),
             "message": "GitHub repository analysis completed successfully.",
             "overall_github_signal": analysis.get("overall_github_signal"),
             "coding_style_summary": analysis.get("coding_style_summary"),

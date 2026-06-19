@@ -15,10 +15,12 @@ from google.genai import types
 from agent.config import get_settings
 from agent.llm_client import (
     _litellm_fallback_providers,
+    activate_gemini_api_key_fallback,
     attach_llm_usage_metadata,
     classify_llm_error,
     effective_max_agent_turns,
     get_llm_call_count,
+    is_gemini_api_key_fallback_active,
 )
 from agent.logging_config import trace_event
 from agent.prep_context import merge_with_prep_state, register_prep_state
@@ -30,7 +32,10 @@ from agent.sandbox_gating import (
     sandbox_overlap_active,
     sandbox_required_for_state,
 )
-from agent.tools.portfolio_signal import resolve_role_category
+from agent.tools.portfolio_signal import (
+    CODE_EVIDENCE_ROLE_CATEGORIES,
+    PORTFOLIO_ROLE_OPTIONS_TEXT,
+)
 from agent.tools.rubric_builder import (
     requirement_matches_need_rescore,
     resolve_session_rubric,
@@ -50,25 +55,25 @@ Never finish on plain text alone — you MUST call tools until submit_screening_
 Use multiple turns: tools first, then submit on the final turn.
 
 Evidence workflow (Exa-first, role-aware):
-1. Read ROLE_CATEGORY, PROFILE_URLS, profile_trust_by_url, and the resume/JD in the brief.
-2. Turn 1 — gather external evidence (parallel when possible; do NOT submit yet):
-   - list_candidate_profile_urls() when you need discovered URLs or fetch budget.
-   - fetch_profiles(urls) via Exa: start with portfolio/personal-site URLs from the resume.
-     Read discovered_github_repo_urls, discovered_profile_urls, suggested_next_urls,
-     github_status_log (after submit), and fetch_budget_remaining in tool responses.
-     High-value follow-ups (LinkedIn, GitHub profile) are auto-fetched when budget allows;
-     call fetch_profiles again for any remaining suggested_next_urls before sandbox.
-3. Turn 2+ — code repos only when relevant to the role:
-   - Software / AI / ML / data roles: analyze_github if needed, then get_github_repo_structures,
-     then run_sandbox_analysis per repo with classification from structures and 1-5 JD-aligned
-     focus_paths. Discovered GitHub repos are already in session — you do not pass them manually.
-   - Design / UX / visual roles: prioritize fetch_profiles on portfolio, Behance, Dribbble,
-     Figma, or personal sites. GitHub and sandbox are OPTIONAL — do NOT penalize candidates
-     for missing GitHub or code repos. Skip get_github_repo_structures and run_sandbox_analysis
-     when no code repositories apply to the role.
-   - Research / academic roles: fetch_profiles on scholar/ORCID/ResearchGate links; GitHub optional.
-4. Final turn — submit_screening_result with resume_similarity_score, requirement_matches,
-   recommendation, recommendation_reasoning, red_flags, and top_file_evaluation when sandbox ran.
+1. Read the JOB DESCRIPTION and PORTFOLIO_ROLE_OPTIONS in the brief.
+2. Turn 1 (required) — classify_portfolio_role(role_category, reasoning):
+   Decide whether this role needs code repos (GitHub), design portfolio (Behance/Figma),
+   research profiles, or no portfolio penalty. Use your JD understanding, not keyword rules.
+3. Profile / portfolio URLs (Exa) — two-phase when the resume lists one portfolio URL:
+   a) fetch_profiles([portfolio_url]) — discovery-only: Exa crawls the page and returns
+      exa_fetchable_discovered_urls + github_api_repo_urls. No follow-up Exa in this call.
+   b) fetch_profiles([...]) — ONE batch with JD-relevant profile URLs only (from
+      exa_fetchable_discovered_urls / required_platforms). Never put repo URLs in fetch_profiles.
+   c) github_api_repo_urls → analyze_github (after discovery when repos were found on a portfolio page),
+      get_github_repo_structures, run_sandbox_analysis. Never pass repo URLs to fetch_profiles.
+4. Multiple resume URLs: batch JD-relevant profile URLs in one fetch_profiles call.
+   list_candidate_profile_urls() shows exa_fetchable_discovered_urls and github_api_repo_urls.
+5. Code evidence (only when classify_portfolio_role says code_evidence_required):
+   - analyze_github for discovered repos, get_github_repo_structures, run_sandbox_analysis
+     with classification from structures and 1-5 JD-aligned focus_paths.
+6. ux_engineering / design roles: Behance/Figma satisfy portfolio proof — GitHub optional.
+7. Final turn — submit_screening_result with resume_similarity_score, requirement_matches,
+   recommendation, recommendation_reasoning, and top_file_evaluation when sandbox ran.
 
 Sandbox scoring rules (when run_sandbox_analysis was used):
 - Do NOT lower scores only because repos lack tests or CI.
@@ -106,24 +111,76 @@ def _log_agent_workflow_state(session_state: dict[str, Any], *, label: str) -> N
 
 def _build_agent_continuation_message(session_state: dict[str, Any]) -> str:
     """Nudge the agent to finish tool workflow when it stopped early."""
+    from agent.tools.portfolio_signal import normalize_role_category
+
+    if not str(session_state.get("portfolio_role_category") or "").strip():
+        return (
+            "CONTINUATION REQUIRED — call classify_portfolio_role first with role_category "
+            "and reasoning after reading the JD. Then gather evidence and submit."
+        )
+
     from agent.adk_tools import _github_repo_urls_from_state, _has_sandbox_reports
 
+    role_category = normalize_role_category(session_state.get("portfolio_role_category"))
+    code_role = role_category in CODE_EVIDENCE_ROLE_CATEGORIES
     repo_urls = _github_repo_urls_from_state(session_state)
     has_structures = bool(session_state.get("github_repo_structures"))
     has_sandbox = _has_sandbox_reports(session_state)
     enriched_count = len(session_state.get("enriched_contents") or [])
-    steps: list[str] = [
-        "CONTINUATION REQUIRED — your next response MUST be a submit_screening_result "
-        "tool call only.",
-        "Do not reply with plain text or summaries.",
-    ]
-    if enriched_count == 0:
+    discovery_done = bool(session_state.get("portfolio_discovery_completed"))
+    from agent.enrichment import resume_profile_urls
+
+    resume_urls = resume_profile_urls(session_state)
+    portfolio_only = len(resume_urls) == 1
+    evidence_pending = (
+        portfolio_only
+        and discovery_done
+        and not isinstance(session_state.get("screening_result"), dict)
+    )
+    steps: list[str] = []
+    if evidence_pending or enriched_count == 0:
         steps.append(
-            "Call fetch_profiles(urls) for portfolio/profile URLs from PROFILE_URLS first."
+            "CONTINUATION REQUIRED — complete evidence gathering (fetch_profiles batch and/or "
+            "analyze_github), then submit_screening_result."
         )
-    if repo_urls and not has_structures:
+    else:
+        steps.extend(
+            [
+                "CONTINUATION REQUIRED — your next response MUST be a submit_screening_result "
+                "tool call only.",
+                "Do not reply with plain text or summaries.",
+            ]
+        )
+    if enriched_count == 0:
+        if len(resume_urls) == 1 and not discovery_done:
+            steps.append(
+                f"Call fetch_profiles([{resume_urls[0]}]) for discovery-only crawl first."
+            )
+        else:
+            steps.append(
+                "Call fetch_profiles(urls) for JD-relevant profile URLs from "
+                "exa_fetchable_discovered_urls or PROFILE_URLS (never repo URLs)."
+            )
+    elif discovery_done:
+        from agent.enrichment import exa_fetchable_discovered_profile_urls, github_api_repo_urls
+
+        exa_next = exa_fetchable_discovered_profile_urls(session_state)
+        repos = github_api_repo_urls(session_state)
+        github = session_state.get("github_repo_analyses")
+        has_repo_analysis = isinstance(github, dict) and bool(github.get("repo_analyses"))
+        if exa_next:
+            steps.append(
+                "Discovery done — call fetch_profiles once with JD-relevant profile URLs only: "
+                + ", ".join(exa_next[:5])
+            )
+        if repos and not has_repo_analysis:
+            steps.append(
+                "Call analyze_github for discovered repos (do not pass repos to fetch_profiles): "
+                + ", ".join(repos[:5])
+            )
+    if code_role and repo_urls and not has_structures:
         steps.append("Call get_github_repo_structures() now (code roles only).")
-    if repo_urls and not has_sandbox:
+    if code_role and repo_urls and not has_sandbox:
         steps.append(
             "Call run_sandbox_analysis(repo_specs) for each repo: copy classification from "
             "get_github_repo_structures and provide 1-5 focus_paths (JD-aligned code files)."
@@ -162,6 +219,50 @@ def _merged_session_state(
     from agent.prep_context import merge_with_prep_state, session_state_to_dict
 
     return merge_with_prep_state({**prep_state, **session_state_to_dict(session_state)})
+
+
+def _session_ready_for_pipeline_fallback(session_state: dict[str, Any]) -> bool:
+    """
+    True when the agent finished evidence gathering and server-side scoring can proceed.
+
+    Once portfolio role is classified, further agent nudges often burn the LLM turn budget
+    without a successful submit_screening_result call.
+    """
+    from agent.adk_tools import _github_repo_urls_from_state, _has_sandbox_reports
+    from agent.tools.portfolio_signal import CODE_EVIDENCE_ROLE_CATEGORIES, normalize_role_category
+
+    role_raw = str(session_state.get("portfolio_role_category") or "").strip()
+    if not role_raw:
+        return False
+
+    role_category = normalize_role_category(role_raw)
+    if role_category not in CODE_EVIDENCE_ROLE_CATEGORIES:
+        return True
+
+    repo_urls = _github_repo_urls_from_state(session_state)
+    if not repo_urls:
+        return True
+
+    return _has_sandbox_reports(session_state)
+
+
+def _pipeline_fallback_failure_reason(fallback: dict[str, Any]) -> str:
+    errors = fallback.get("errors")
+    if isinstance(errors, list) and errors:
+        first = errors[0]
+        if isinstance(first, dict):
+            message = str(first.get("message") or "").strip()
+            code = str(first.get("code") or "").strip()
+            if message and code:
+                return f"{code}: {message}"
+            if message:
+                return message
+            if code:
+                return code
+    status = str(fallback.get("resume_screening_status") or "").strip()
+    if status:
+        return f"resume_screening_status={status}"
+    return "unknown scoring failure"
 
 
 async def _run_heuristic_sandbox_fallback_if_needed(
@@ -214,7 +315,7 @@ async def _attempt_pipeline_score_fallback(
     session_state: dict[str, Any],
     *,
     processing_time_ms: int | None,
-) -> dict[str, Any] | None:
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     from agent.adk_tools import ensure_sandbox_evidence
     from agent.pipeline import score_with_validation
 
@@ -225,21 +326,29 @@ async def _attempt_pipeline_score_fallback(
     register_prep_state(merged_state)
     fallback = score_with_validation(
         merged_state,
-        max_attempts=1,
-        max_llm_attempts=2,
+        max_attempts=2,
+        max_llm_attempts=3,
         compact_sandbox_prompt=True,
     )
     if fallback.get("resume_screening_status") != "completed":
-        return None
+        logger.warning(
+            "Pipeline score fallback failed application_id=%s reason=%s",
+            merged_state.get("application_id"),
+            _pipeline_fallback_failure_reason(fallback),
+        )
+        return None, fallback
     metadata = fallback.get("metadata")
     if isinstance(metadata, dict):
         metadata["agent_submit_fallback"] = True
         if merged_state.get("sandbox_heuristic_fallback"):
             metadata["sandbox_heuristic_fallback"] = True
         fallback["metadata"] = attach_llm_usage_metadata(metadata)
-    return attach_temp_sandbox_reports(
-        fallback,
-        merged_state.get("github_repo_analyses"),
+    return (
+        attach_temp_sandbox_reports(
+            fallback,
+            merged_state.get("github_repo_analyses"),
+        ),
+        None,
     )
 
 
@@ -271,7 +380,6 @@ def _build_submit_skeleton(rubric_compact: list[dict[str, Any]]) -> str:
         ],
         "recommendation": "hold",
         "recommendation_reasoning": "Short hiring recommendation rationale.",
-        "red_flags": [],
     }
     return json.dumps(skeleton, indent=2)
 
@@ -289,12 +397,24 @@ def build_agent_user_message(state: dict[str, Any]) -> str:
     rubric_json = json.dumps(rubric_compact, indent=2)
     trust_map = state.get("profile_trust_by_url") or {}
     trust_json = json.dumps(trust_map, indent=2)
-    identity_flags = list(state.get("identity_red_flags") or [])
     preamble = str(state.get("rubric_preamble") or "").strip()
     jd_raw = str(state.get("jd_raw") or "")
     resume_text = str(state.get("resume_text") or "")
     profile_urls = list(state.get("profile_urls") or [])
     profile_urls_json = json.dumps(profile_urls, indent=2)
+    from agent.enrichment import resume_profile_urls
+    from agent.security.profile_identity import is_exa_enrichable_profile_url
+
+    resume_urls = resume_profile_urls(state)
+    portfolio_workflow_block = ""
+    if len(resume_urls) == 1 and is_exa_enrichable_profile_url(resume_urls[0]):
+        portfolio_workflow_block = f"""
+PORTFOLIO_DISCOVERY_WORKFLOW (resume has one profile URL):
+1. classify_portfolio_role
+2. fetch_profiles(["{resume_urls[0]}"]) — discovery-only (auto): extracts links, no follow-up Exa
+3. fetch_profiles([...]) — ONE batch: JD-relevant URLs from exa_fetchable_discovered_urls only
+4. github_api_repo_urls → analyze_github (never pass repo URLs to fetch_profiles)
+"""
     resume_structured = state.get("resume_structured") or {}
     resume_summary = ""
     if isinstance(resume_structured, dict) and any(resume_structured.values()):
@@ -305,19 +425,8 @@ def build_agent_user_message(state: dict[str, Any]) -> str:
         )
 
     identity_section = ""
-    if identity_flags:
-        identity_section = (
-            "\nIDENTITY RED FLAGS (from prep — include in output red_flags if applicable):\n"
-            + json.dumps(identity_flags, indent=2)
-            + "\n"
-        )
 
     cap_note = ""
-    if state.get("profile_identity_cap_score"):
-        cap_note = (
-            "\nNote: At least one profile URL is scoring_untrusted. "
-            "Overall resume_similarity_score will be capped at 45 after submit.\n"
-        )
 
     github_block = ""
     github_repo_analyses = state.get("github_repo_analyses")
@@ -400,34 +509,26 @@ def build_agent_user_message(state: dict[str, Any]) -> str:
         if sandbox_reports and sandbox_llm_scoring_active():
             github_block += f"\n{SANDBOX_LLM_SCORING_RULES}\n"
 
-    jd_structured = state.get("jd_structured") or {}
-    role_category = resolve_role_category(jd_structured)
-    code_role = role_category in (
-        "software_engineering",
-        "aiml",
-        "data_science",
-        "research_academic",
-    )
     evidence_note = (
-        "Start with fetch_profiles on PROFILE_URLS (Exa). For code-heavy roles, "
-        "call get_github_repo_structures and run_sandbox_analysis when repos exist."
+        "REQUIRED FIRST STEP: call classify_portfolio_role after reading the JD. "
+        "Then fetch_profiles and optional GitHub/sandbox per the tool response."
         if agent_evidence_orchestration_active()
-        else "Call fetch_profiles on PROFILE_URLS, then submit_screening_result."
-    )
-    if agent_evidence_orchestration_active() and not code_role:
-        evidence_note = (
-            "Start with fetch_profiles on portfolio/design URLs (Exa). "
-            "GitHub and sandbox are optional — do not penalize missing code repos."
+        else (
+            "Call classify_portfolio_role first, then fetch_profiles on PROFILE_URLS, "
+            "then submit_screening_result."
         )
+    )
 
     return f"""Screen this candidate for the role below.
 
 APPLICATION_ID: {state.get("application_id")}
 JOB_ID: {state.get("job_id")}
-ROLE_CATEGORY: {role_category}
 PROFILE_URL_COUNT: {len(profile_urls)}
 SESSION_FETCH_BUDGET: {settings.max_urls_per_resume} unique Exa fetches per session
 ENRICHED_URL_COUNT: {len(state.get("enriched_contents") or [])}
+
+PORTFOLIO_ROLE_OPTIONS:
+{PORTFOLIO_ROLE_OPTIONS_TEXT}
 
 {preamble}
 {cap_note}
@@ -447,7 +548,7 @@ REDACTED RESUME:
 {resume_text[:8000]}
 {github_block}
 URLs and trust tiers are in PROFILE_URLS and PROFILE_TRUST_BY_URL above.
-{evidence_note}
+{portfolio_workflow_block}{evidence_note}
 
 SUBMIT_PAYLOAD_SHAPE (fill with real scores/evidence; call submit_screening_result):
 {_build_submit_skeleton(rubric_compact)}
@@ -541,6 +642,7 @@ async def run_screening_agent_async(
     via Exa when ``AUTO_ENRICH_PROFILES`` is enabled (default).
     """
     register_prep_state(state)
+    state["screening_mode"] = state.get("screening_mode") or get_settings().screening_mode or "agent"
     run_started = time.perf_counter()
     trace_event(
         logger,
@@ -619,124 +721,189 @@ async def run_screening_agent_async(
 
     max_continuations = 3 if agent_evidence_orchestration_active(settings) else 0
     next_message: types.Content = user_message
+    vertex_api_key_retries = (
+        1
+        if settings.gemini_use_vertexai and settings.gemini_api_key.strip()
+        else 0
+    )
 
-    try:
-        for continuation_idx in range(max_continuations + 1):
-            await _consume_agent_run(
+    agent_succeeded = False
+    for vertex_attempt in range(vertex_api_key_retries + 1):
+        if vertex_attempt > 0:
+            await seed_screening_session(
                 runner,
+                state,
                 user_id=user_id,
                 session_id=session_id,
-                user_message=next_message,
-                run_config=run_config,
-                timeout_seconds=agent_timeout_seconds,
             )
+            trace_event(
+                logger,
+                "agent_vertex_api_key_retry",
+                user_id=user_id,
+                session_id=session_id,
+            )
+
+        try:
+            for continuation_idx in range(max_continuations + 1):
+                await _consume_agent_run(
+                    runner,
+                    user_id=user_id,
+                    session_id=session_id,
+                    user_message=next_message,
+                    run_config=run_config,
+                    timeout_seconds=agent_timeout_seconds,
+                )
+                session = await runner.session_service.get_session(
+                    app_name=runner.app_name,
+                    user_id=user_id,
+                    session_id=session_id,
+                )
+                if session is None:
+                    break
+                session_state = session.state or {}
+                from agent.prep_context import session_state_to_dict
+
+                session_state_dict = session_state_to_dict(session_state)
+                if isinstance(session_state_dict.get("screening_result"), dict):
+                    break
+                if continuation_idx >= max_continuations:
+                    break
+                if _session_ready_for_pipeline_fallback(session_state_dict):
+                    logger.warning(
+                        "Agent evidence workflow complete but submit missing; "
+                        "skipping agent continuation nudges for pipeline fallback"
+                    )
+                    trace_event(
+                        logger,
+                        "agent_pipeline_fallback_early",
+                        continuation=continuation_idx + 1,
+                    )
+                    break
+
+                _log_agent_workflow_state(
+                    session_state_dict,
+                    label=f"pre-continuation-{continuation_idx + 1}",
+                )
+                continuation_text = _build_agent_continuation_message(session_state_dict)
+                logger.warning(
+                    "Agent stopped without submit (continuation %s/%s); nudging",
+                    continuation_idx + 1,
+                    max_continuations,
+                )
+                trace_event(
+                    logger,
+                    "agent_continuation_nudge",
+                    continuation=continuation_idx + 1,
+                    max_continuations=max_continuations,
+                )
+                next_message = types.Content(
+                    role="user",
+                    parts=[types.Part(text=continuation_text)],
+                )
+
             session = await runner.session_service.get_session(
                 app_name=runner.app_name,
                 user_id=user_id,
                 session_id=session_id,
             )
-            if session is None:
-                break
-            session_state = session.state or {}
-            from agent.prep_context import session_state_to_dict
+            if session is not None:
+                from agent.prep_context import session_state_to_dict
 
-            session_state_dict = session_state_to_dict(session_state)
-            if isinstance(session_state_dict.get("screening_result"), dict):
-                break
-            if continuation_idx >= max_continuations:
-                break
-
-            _log_agent_workflow_state(
-                session_state_dict,
-                label=f"pre-continuation-{continuation_idx + 1}",
-            )
-            continuation_text = _build_agent_continuation_message(session_state_dict)
-            logger.warning(
-                "Agent stopped without submit (continuation %s/%s); nudging",
-                continuation_idx + 1,
-                max_continuations,
-            )
+                session_state_dict = session_state_to_dict(session.state or {})
+                _log_agent_workflow_state(session_state_dict, label="post-continuations")
+                if not isinstance(session_state_dict.get("screening_result"), dict):
+                    heuristic_ran = await _run_heuristic_sandbox_fallback_if_needed(
+                        state,
+                        session_state_dict,
+                    )
+                    if heuristic_ran:
+                        session = await runner.session_service.get_session(
+                            app_name=runner.app_name,
+                            user_id=user_id,
+                            session_id=session_id,
+                        )
+                        if session is not None:
+                            session_state_dict = session_state_to_dict(session.state or {})
+                        if not _session_ready_for_pipeline_fallback(session_state_dict):
+                            await _consume_agent_run(
+                                runner,
+                                user_id=user_id,
+                                session_id=session_id,
+                                user_message=types.Content(
+                                    role="user",
+                                    parts=[
+                                        types.Part(
+                                            text=_build_heuristic_fallback_submit_message(state)
+                                        )
+                                    ],
+                                ),
+                                run_config=run_config,
+                                timeout_seconds=agent_timeout_seconds,
+                            )
+            agent_succeeded = True
+            break
+        except TimeoutError:
             trace_event(
                 logger,
-                "agent_continuation_nudge",
-                continuation=continuation_idx + 1,
-                max_continuations=max_continuations,
+                "screening_agent_timeout",
+                timeout_seconds=agent_timeout_seconds,
+                duration_ms=int((time.perf_counter() - run_started) * 1000),
             )
-            next_message = types.Content(
-                role="user",
-                parts=[types.Part(text=continuation_text)],
-            )
-
-        session = await runner.session_service.get_session(
-            app_name=runner.app_name,
-            user_id=user_id,
-            session_id=session_id,
-        )
-        if session is not None:
-            from agent.prep_context import session_state_to_dict
-
-            session_state_dict = session_state_to_dict(session.state or {})
-            _log_agent_workflow_state(session_state_dict, label="post-continuations")
-            if not isinstance(session_state_dict.get("screening_result"), dict):
-                heuristic_ran = await _run_heuristic_sandbox_fallback_if_needed(
-                    state,
-                    session_state_dict,
-                )
-                if heuristic_ran:
-                    await _consume_agent_run(
-                        runner,
-                        user_id=user_id,
-                        session_id=session_id,
-                        user_message=types.Content(
-                            role="user",
-                            parts=[
-                                types.Part(text=_build_heuristic_fallback_submit_message(state))
-                            ],
-                        ),
-                        run_config=run_config,
-                        timeout_seconds=agent_timeout_seconds,
-                    )
-    except TimeoutError:
-        trace_event(
-            logger,
-            "screening_agent_timeout",
-            timeout_seconds=agent_timeout_seconds,
-            duration_ms=int((time.perf_counter() - run_started) * 1000),
-        )
-        return build_failed_result(
-            application_id=application_id,
-            job_id=job_id,
-            code="AGENT_TIMEOUT",
-            message=(
-                f"Agent run exceeded {agent_timeout_seconds}s without submitting screening_result."
-            ),
-            resume_text=resume_text,
-            processing_time_ms=processing_time_ms,
-        )
-    except Exception as exc:
-        logger.exception("Agent run failed")
-        trace_event(
-            logger,
-            "screening_agent_exception",
-            error_type=type(exc).__name__,
-            error=str(exc),
-            duration_ms=int((time.perf_counter() - run_started) * 1000),
-        )
-        code, message = classify_llm_error(exc)
-        if code == "LLM_RATE_LIMIT" and _litellm_fallback_providers(settings):
-            logger.warning("Agent hit LLM rate limit; attempting pipeline score fallback")
-            fallback = await _attempt_pipeline_score_fallback(
-                state,
-                {},
+            return build_failed_result(
+                application_id=application_id,
+                job_id=job_id,
+                code="AGENT_TIMEOUT",
+                message=(
+                    f"Agent run exceeded {agent_timeout_seconds}s without submitting screening_result."
+                ),
+                resume_text=resume_text,
                 processing_time_ms=processing_time_ms,
             )
-            if fallback is not None:
-                return fallback
+        except Exception as exc:
+            logger.exception("Agent run failed")
+            trace_event(
+                logger,
+                "screening_agent_exception",
+                error_type=type(exc).__name__,
+                error=str(exc),
+                duration_ms=int((time.perf_counter() - run_started) * 1000),
+            )
+            code, message = classify_llm_error(exc)
+            if (
+                vertex_attempt < vertex_api_key_retries
+                and code == "LLM_RATE_LIMIT"
+                and not is_gemini_api_key_fallback_active()
+                and activate_gemini_api_key_fallback(settings)
+            ):
+                logger.warning(
+                    "Vertex Gemini rate limited; retrying agent with GEMINI_API_KEY"
+                )
+                next_message = user_message
+                continue
+            if code == "LLM_RATE_LIMIT" and _litellm_fallback_providers(settings):
+                logger.warning("Agent hit LLM rate limit; attempting pipeline score fallback")
+                fallback, _failed = await _attempt_pipeline_score_fallback(
+                    state,
+                    {},
+                    processing_time_ms=processing_time_ms,
+                )
+                if fallback is not None:
+                    return fallback
+            return build_failed_result(
+                application_id=application_id,
+                job_id=job_id,
+                code=code,
+                message=message,
+                resume_text=resume_text,
+                processing_time_ms=processing_time_ms,
+            )
+
+    if not agent_succeeded:
         return build_failed_result(
             application_id=application_id,
             job_id=job_id,
-            code=code,
-            message=message,
+            code="LLM_ERROR",
+            message="Agent run failed without completing.",
             resume_text=resume_text,
             processing_time_ms=processing_time_ms,
         )
@@ -765,7 +932,7 @@ async def run_screening_agent_async(
             "attempting pipeline score fallback",
             enriched_count,
         )
-        fallback = await _attempt_pipeline_score_fallback(
+        fallback, failed_fallback = await _attempt_pipeline_score_fallback(
             state,
             session_state,
             processing_time_ms=processing_time_ms,
@@ -773,14 +940,16 @@ async def run_screening_agent_async(
         if fallback is not None:
             return fallback
 
+        fallback_reason = _pipeline_fallback_failure_reason(failed_fallback or {})
         return build_failed_result(
             application_id=application_id,
             job_id=job_id,
             code="LLM_ERROR",
             message=(
                 "Agent completed without calling submit_screening_result. "
-                f"Pipeline fallback also failed after {get_llm_call_count()} agent LLM call(s) "
-                f"(cap {max_turns}). Try SCREENING_MODE=pipeline for a single scoring call."
+                f"Pipeline fallback also failed after {get_llm_call_count()} LLM call(s) "
+                f"(agent cap {max_turns}): {fallback_reason}. "
+                "Try SCREENING_MODE=pipeline for a single scoring call."
             ),
             resume_text=resume_text,
             processing_time_ms=processing_time_ms,

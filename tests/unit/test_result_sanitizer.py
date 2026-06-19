@@ -74,7 +74,7 @@ def test_normalize_messy_llm_payload_passes_validation(test_settings) -> None:
     assert normalized["requirement_matches"][0]["evidence"]
     assert normalized["recommendation"] == "advance"
     assert normalized["recommendation_reasoning"]
-    assert normalized["red_flags"][0]["severity"] == "medium"
+    assert "red_flags" not in normalized
     assert normalized["sources_crawled"][0]["url"].startswith("https://")
     assert "title" not in normalized["sources_crawled"][0]
     assert "processing_time_ms" not in normalized["metadata"]
@@ -189,6 +189,154 @@ def test_sanitize_sources_crawled_falls_back_to_profile_urls() -> None:
     assert len(sources) == 1
     assert sources[0]["url"] == "https://github.com/candidate"
     assert sources[0]["title"] == "github"
+
+
+def test_sanitize_sources_crawled_excludes_unfetched_discovered_junk() -> None:
+    from agent.tools.result_sanitizer import sanitize_sources_crawled
+
+    portfolio = "https://manavbhavsar.vercel.app/"
+    sources = sanitize_sources_crawled(
+        [
+            {
+                "url": "https://formspree.io/f/xzdqqzdd",
+                "relevance": "medium",
+                "title": "discovered",
+            }
+        ],
+        enriched_fallback=[
+            {"url": portfolio, "domain_category": "portfolio", "ok": True},
+            {"url": "https://github.com/Manavv007", "domain_category": "code", "ok": True},
+            {"url": "https://linkedin.com/in/manavbhavsar0908", "domain_category": "professional", "ok": True},
+        ],
+        profile_urls_fallback=[
+            portfolio,
+            "https://formspree.io",
+            "https://manavbhavsar.vercel.app/github.com/Manavv007",
+        ],
+        resume_profile_urls=[portfolio],
+    )
+
+    urls = {item["url"] for item in sources}
+    assert "https://formspree.io/f/xzdqqzdd" not in urls
+    assert "https://formspree.io" not in urls
+    assert "https://manavbhavsar.vercel.app/github.com/Manavv007" not in urls
+    assert portfolio in urls
+    assert "https://github.com/Manavv007" in urls
+    assert "https://linkedin.com/in/manavbhavsar0908" in urls
+
+
+def test_sanitize_sources_crawled_excludes_discovered_linkedin_noise() -> None:
+    from agent.tools.result_sanitizer import sanitize_sources_crawled
+
+    sources = sanitize_sources_crawled(
+        [],
+        enriched_fallback=[
+            {
+                "url": "https://github.com/Manavv007",
+                "domain_category": "code",
+                "ok": True,
+            },
+            {
+                "url": "https://linkedin.com/in/manavbhavsar0908",
+                "domain_category": "professional",
+                "ok": True,
+            },
+            {
+                "url": "https://www.linkedin.com/school/pdeuofficial",
+                "domain_category": "discovered",
+                "ok": True,
+            },
+            {
+                "url": "https://linkedin.com/company/nptel",
+                "domain_category": "discovered",
+                "ok": True,
+            },
+            {
+                "url": "https://www.linkedin.com/posts/foo-activity-123",
+                "domain_category": "discovered",
+                "ok": True,
+            },
+        ],
+        profile_urls_fallback=[
+            "https://github.com/Manavv007",
+            "https://linkedin.com/in/manavbhavsar0908",
+        ],
+    )
+
+    urls = {item["url"] for item in sources}
+    assert "https://github.com/Manavv007" in urls
+    assert "https://linkedin.com/in/manavbhavsar0908" in urls
+    assert not any("/school/" in url for url in urls)
+    assert not any("/company/" in url for url in urls)
+    assert not any("/posts/" in url for url in urls)
+
+
+def test_sanitize_sources_crawled_collapses_behance_locale_variants() -> None:
+    from agent.tools.result_sanitizer import sanitize_sources_crawled
+
+    sources = sanitize_sources_crawled(
+        [],
+        enriched_fallback=[
+            {
+                "url": "https://www.behance.net/archidaga",
+                "domain_category": "portfolio",
+                "ok": True,
+            },
+            {
+                "url": "https://www.behance.net/archidaga?locale=cs_CZ",
+                "domain_category": "discovered",
+                "ok": True,
+            },
+            {
+                "url": "https://www.behance.net/archidaga?locale=fr_FR",
+                "domain_category": "discovered",
+                "ok": True,
+            },
+            {
+                "url": "https://linkedin.com/in/archidaga",
+                "domain_category": "professional",
+                "ok": True,
+            },
+            {
+                "url": "https://www.linkedin.com/in/archidaga",
+                "domain_category": "professional",
+                "ok": True,
+            },
+        ],
+        profile_urls_fallback=[
+            "https://www.behance.net/archidaga",
+            "https://linkedin.com/in/archidaga",
+        ],
+    )
+
+    assert len(sources) == 2
+    urls = [item["url"] for item in sources]
+    assert "https://behance.net/archidaga" in urls
+    assert "https://linkedin.com/in/archidaga" in urls
+    assert not any("locale=" in url for url in urls)
+
+
+def test_discover_links_from_linkedin_profile_skips_school_and_posts() -> None:
+    from agent.enrichment import _discover_links_from_entries
+
+    linkedin_html = """
+    Education: https://www.linkedin.com/school/pdeuofficial
+    Company: https://linkedin.com/company/nptel
+    Post: https://www.linkedin.com/posts/krish-parmar-developer_ai-llm-activity-7419757286421626880-AS3G
+    Portfolio: https://manavbhavsar.dev/projects
+    """
+    entries = [
+        {
+            "url": "https://linkedin.com/in/manavbhavsar0908",
+            "ok": True,
+            "content": linkedin_html,
+        }
+    ]
+    _, discovered_non_github = _discover_links_from_entries(entries)
+    joined = " ".join(discovered_non_github).lower()
+    assert "school" not in joined
+    assert "company" not in joined
+    assert "/posts/" not in joined
 
 
 def test_compact_metadata_strips_null_optional_fields() -> None:

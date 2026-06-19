@@ -55,11 +55,6 @@
       "type": "string",
       "minLength": 1
     },
-    "red_flags": {
-      "type": "array",
-      "items": { "$ref": "#/definitions/red_flag" },
-      "default": []
-    },
     "sources_crawled": {
       "type": "array",
       "items": { "$ref": "#/definitions/crawled_source" },
@@ -83,6 +78,14 @@
     },
     "evaluation_breakdown": {
       "$ref": "#/definitions/evaluation_breakdown"
+    },
+    "candidate_integrity": {
+      "$ref": "#/definitions/candidate_integrity"
+    },
+    "integrity_signals": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/integrity_signal" },
+      "default": []
     }
   },
   "allOf": [
@@ -139,19 +142,6 @@
         },
         "evidence": { "type": "string", "minLength": 1 },
         "source_quote": { "type": "string" }
-      }
-    },
-    "red_flag": {
-      "type": "object",
-      "required": ["flag", "severity", "evidence"],
-      "additionalProperties": false,
-      "properties": {
-        "flag": { "type": "string", "minLength": 1 },
-        "severity": {
-          "type": "string",
-          "enum": ["low", "medium", "high"]
-        },
-        "evidence": { "type": "string", "minLength": 1 }
       }
     },
     "crawled_source": {
@@ -212,6 +202,58 @@
         "code": { "type": "string", "minLength": 1 },
         "message": { "type": "string", "minLength": 1 },
         "source_url": { "type": "string", "format": "uri" }
+      }
+    },
+    "candidate_integrity": {
+      "type": "object",
+      "required": [
+        "overall",
+        "github_account_timeline",
+        "linkedin_contact_links",
+        "github_profile_readme_links",
+        "reasoning"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "overall": {
+          "type": "string",
+          "enum": ["good", "bad", "not_enough_evidence"]
+        },
+        "github_account_timeline": {
+          "type": "string",
+          "enum": ["good", "bad", "not_enough_evidence"]
+        },
+        "linkedin_contact_links": {
+          "type": "string",
+          "enum": ["good", "bad", "not_enough_evidence"]
+        },
+        "github_profile_readme_links": {
+          "type": "string",
+          "enum": ["good", "bad", "not_enough_evidence"]
+        },
+        "reasoning": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        }
+      }
+    },
+    "integrity_signal": {
+      "type": "object",
+      "required": ["signal_id", "indication", "evidence"],
+      "additionalProperties": false,
+      "properties": {
+        "signal_id": { "type": "string", "minLength": 1 },
+        "indication": {
+          "type": "string",
+          "enum": ["good", "bad", "not_enough_evidence"]
+        },
+        "evidence": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "source_urls": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": []
+        }
       }
     },
     "evaluation_breakdown": {

@@ -7,6 +7,7 @@ from agent.tools.portfolio_signal import (
     is_personal_website,
     is_portfolio_like_url,
     normalize_role_category,
+    resolve_portfolio_role_category,
 )
 
 
@@ -144,9 +145,108 @@ def test_infer_role_category_prefers_software_over_design_domain() -> None:
     assert category == "software_engineering"
 
 
+def test_resolve_portfolio_role_category_uses_agent_session() -> None:
+    category = resolve_portfolio_role_category(
+        session_state={
+            "screening_mode": "agent",
+            "portfolio_role_category": "design",
+        },
+        screening_mode="agent",
+    )
+    assert category == "design"
+
+
+def test_resolve_portfolio_role_category_pipeline_skips_penalties() -> None:
+    category = resolve_portfolio_role_category(
+        session_state={
+            "screening_mode": "pipeline",
+            "portfolio_role_category": "software_engineering",
+        },
+        screening_mode="pipeline",
+    )
+    assert category == "non_portfolio"
+
+
+def test_ux_engineer_behance_no_penalty_when_agent_classifies_ux_engineering() -> None:
+    behance = "https://behance.net/archidaga"
+    role = resolve_portfolio_role_category(
+        session_state={
+            "screening_mode": "agent",
+            "portfolio_role_category": "ux_engineering",
+        },
+        screening_mode="agent",
+    )
+    signal = evaluate_portfolio_signal(
+        role_category=role,
+        profile_urls=[behance, "https://linkedin.com/in/archidaga"],
+        enriched_contents={
+            behance: (
+                "===BEGIN EXTERNAL CONTENT: https://behance.net/archidaga===\n"
+                + ("Interaction design case study portfolio showcase " * 20)
+                + "\n===END EXTERNAL CONTENT==="
+            )
+        },
+        experience_years=0,
+    )
+    assert signal["role_category"] == "ux_engineering"
+    assert "behance.net" in signal["required_platforms_found"]
+    assert signal["penalty_points"] == 0
+    assert signal["penalty_applied"] is False
+
+
+def test_ux_engineer_behance_no_penalty_when_agent_classifies_design() -> None:
+    behance = "https://behance.net/archidaga"
+    role = resolve_portfolio_role_category(
+        session_state={
+            "screening_mode": "agent",
+            "portfolio_role_category": "design",
+        },
+        screening_mode="agent",
+    )
+    signal = evaluate_portfolio_signal(
+        role_category=role,
+        profile_urls=[behance, "https://linkedin.com/in/archidaga"],
+        enriched_contents={
+            behance: (
+                "===BEGIN EXTERNAL CONTENT: https://behance.net/archidaga===\n"
+                + ("Interaction design case study portfolio showcase " * 20)
+                + "\n===END EXTERNAL CONTENT==="
+            )
+        },
+        experience_years=0,
+    )
+    assert signal["role_category"] == "design"
+    assert "behance.net" in signal["required_platforms_found"]
+    assert signal["penalty_points"] == 0
+    assert signal["penalty_applied"] is False
+
+
 def test_personal_website_detection() -> None:
     assert is_personal_website("https://manavpatel.dev") is True
     assert is_personal_website("https://linkedin.com/in/manav") is False
+    assert (
+        is_personal_website(
+            "https://manavbhavsar.vercel.app/github.com/Manavv007/SentinEL-Sentinel-eGeMAPS-openSMILE-"
+        )
+        is False
+    )
+
+
+def test_personal_portfolio_url_prefers_site_root_over_wrapped_github_path() -> None:
+    root = "https://manavbhavsar.vercel.app/"
+    wrapped = (
+        "https://manavbhavsar.vercel.app/github.com/Manavv007/"
+        "SentinEL-Sentinel-eGeMAPS-openSMILE-"
+    )
+    signal = evaluate_portfolio_signal(
+        role_category="software_engineering",
+        profile_urls=[wrapped, root, "https://github.com/Manavv007/repo"],
+        enriched_contents=[],
+        experience_years=2,
+        resume_structured={"candidate_name": "Manav Bhavsar"},
+        github_repo_analyses={"username": "Manavv007"},
+    )
+    assert signal["personal_portfolio_url"] == root
 
 
 def test_google_docs_with_github_links_is_portfolio_like() -> None:

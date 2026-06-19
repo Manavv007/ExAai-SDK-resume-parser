@@ -37,6 +37,9 @@ class ScreeningSessionState(TypedDict, total=False):
     github_repo_analyses: dict[str, Any]
     discovered_profile_urls: list[str]
     discovered_github_repo_urls: list[str]
+    portfolio_role_category: str
+    portfolio_role_reasoning: str
+    portfolio_role_source: str
 
 
 # Documented keys for maintainers (TypedDict is not enforced at runtime).
@@ -56,8 +59,10 @@ Agent path (Phase 3+):
   Prep state is copied into ADK session.state before Runner starts.
   Initial user message from build_agent_user_message() carries JD, resume, rubric,
   and profile_trust_by_url; tools read/write the same session dict.
-  Agent tools: list_candidate_profile_urls, fetch_profiles, submit_screening_result
-  (fetch_profile_content optional for single URL).
+  Agent tools: classify_portfolio_role, list_candidate_profile_urls, fetch_profiles,
+  submit_screening_result (fetch_profile_content optional for single URL).
+  portfolio_role_category, portfolio_role_reasoning, portfolio_role_source — set by
+  classify_portfolio_role; required before submit in agent mode.
   screening_result — resume-screening-result-v1 after submit_screening_result succeeds.
   discovered_profile_urls, discovered_github_repo_urls — depth-1 links discovered from
   portfolio pages during enrichment.

@@ -17,6 +17,30 @@ def reset_rate_limit() -> None:
 
 
 @pytest.mark.asyncio
+async def test_get_user() -> None:
+    client = GitHubClient(token="test-token")
+    mock_response = MagicMock()
+    mock_response.json.return_value = {
+        "login": "testuser",
+        "html_url": "https://github.com/testuser",
+        "created_at": "2018-01-01T00:00:00Z",
+        "bio": "Engineer",
+        "blog": "https://example.com",
+        "twitter_username": "testuser",
+        "email": None,
+    }
+    mock_response.headers = {"X-RateLimit-Remaining": "5000", "X-RateLimit-Limit": "5000"}
+    mock_response.status_code = 200
+
+    with patch("httpx.AsyncClient.request", new_callable=AsyncMock) as mock_request:
+        mock_request.return_value = mock_response
+        user = await client.get_user("testuser")
+        assert user is not None
+        assert user.login == "testuser"
+        assert user.created_at.startswith("2018")
+
+
+@pytest.mark.asyncio
 async def test_get_user_repos() -> None:
     client = GitHubClient(token="test-token")
     mock_response = MagicMock()
@@ -32,6 +56,7 @@ async def test_get_user_repos() -> None:
             "fork": False,
             "default_branch": "main",
             "updated_at": "2026-06-06T12:00:00Z",
+            "created_at": "2020-01-01T00:00:00Z",
             "topics": ["python", "api"],
         }
     ]

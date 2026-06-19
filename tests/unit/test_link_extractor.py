@@ -2,11 +2,14 @@ from pathlib import Path
 
 from agent.tools.link_extractor import (
     ExtractedLink,
+    canonical_profile_url,
+    collapse_profile_urls,
     extract_links,
     extract_urls_from_html,
     extract_urls_from_text,
     is_profile_discovery_url,
     normalize_url,
+    profile_url_identity_key,
     resolve_profile_url,
 )
 from agent.tools.parser import JdStructured, parse_jd_structured
@@ -17,6 +20,59 @@ FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"
 def test_normalize_strips_tracking_and_forces_https() -> None:
     url = normalize_url("http://GitHub.com/janedoe?utm_source=x&ref=1")
     assert url == "https://github.com/janedoe?ref=1"
+
+
+def test_canonical_profile_url_strips_locale_on_personal_profile_paths() -> None:
+  for url in (
+        "https://www.behance.net/archidaga?locale=cs_CZ",
+        "https://dribbble.com/archidaga?lang=en",
+        "https://www.artstation.com/archidaga?hl=fr",
+        "https://soundcloud.com/archidaga?lang=de",
+        "https://jane.dev/?lang=en",
+    ):
+        canonical = canonical_profile_url(url)
+        assert canonical is not None
+        assert "?" not in canonical
+        assert "locale" not in canonical
+        assert "lang" not in canonical
+
+
+def test_canonical_profile_url_preserves_query_on_non_profile_paths() -> None:
+    assert (
+        canonical_profile_url("https://github.com/janedoe/awesome-repo?tab=readme")
+        == "https://github.com/janedoe/awesome-repo?tab=readme"
+    )
+    assert (
+        canonical_profile_url("https://behance.net/gallery?locale=en_US")
+        == "https://behance.net/gallery"
+    )
+
+
+def test_profile_url_identity_key_dedupes_platform_variants() -> None:
+    keys = {
+        profile_url_identity_key("https://www.behance.net/archidaga"),
+        profile_url_identity_key("https://behance.net/archidaga?locale=de_DE"),
+        profile_url_identity_key("https://www.linkedin.com/in/archidaga"),
+        profile_url_identity_key("https://linkedin.com/in/archidaga"),
+    }
+    assert None not in keys
+    assert len(keys) == 2
+
+
+def test_collapse_profile_urls_keeps_one_per_identity() -> None:
+    urls = collapse_profile_urls(
+        [
+            "https://www.behance.net/archidaga",
+            "https://www.behance.net/archidaga?locale=cs_CZ",
+            "https://www.behance.net/archidaga?locale=fr_FR",
+            "https://linkedin.com/in/archidaga",
+            "https://www.linkedin.com/in/archidaga",
+        ]
+    )
+    assert urls == [
+        "https://behance.net/archidaga",
+        "https://linkedin.com/in/archidaga",
+    ]
 
 
 def test_normalize_bare_domain() -> None:
@@ -155,3 +211,54 @@ def test_extract_urls_from_text_still_works() -> None:
     urls = extract_urls_from_text(text, max_urls=10)
     joined = " ".join(urls).lower()
     assert "github.com/janedoe" in joined
+
+
+def test_is_fetchable_personal_profile_url_filters_behance_navigation() -> None:
+    from agent.tools.link_extractor import is_fetchable_personal_profile_url
+
+    assert is_fetchable_personal_profile_url("https://behance.net/archidaga") is True
+    assert is_fetchable_personal_profile_url("https://behance.net/joblist?tracking_source=nav20") is False
+    assert is_fetchable_personal_profile_url("https://behance.net/?tracking_source=nav20") is False
+    assert is_fetchable_personal_profile_url("https://behance.net/about") is False
+    assert (
+        is_fetchable_personal_profile_url(
+            "https://behance.net/archidaga/+(n.target&&n.target.src):n}function e(n){return n.replace"
+        )
+        is False
+    )
+
+
+def test_is_profile_discovery_url_rejects_form_handlers_and_wrapped_external_paths() -> None:
+    portfolio = "https://manavbhavsar.vercel.app/"
+    assert is_profile_discovery_url(portfolio) is True
+    assert is_profile_discovery_url("https://formspree.io") is False
+    assert is_profile_discovery_url("https://formspree.io/f/xzdqqzdd") is False
+    assert (
+        is_profile_discovery_url("https://manavbhavsar.vercel.app/github.com/Manavv007")
+        is False
+    )
+    assert (
+        is_profile_discovery_url(
+            "https://manavbhavsar.vercel.app/linkedin.com/in/manavbhavsar0908"
+        )
+        is False
+    )
+    assert (
+        is_profile_discovery_url(
+            "https://manavbhavsar.vercel.app/ManavResume_20_3%20(2).pdf"
+        )
+        is False
+    )
+
+
+def test_unwrap_embedded_external_profile_url_rewrites_github_paths() -> None:
+    from agent.tools.link_extractor import unwrap_embedded_external_profile_url
+
+    wrapped_repo = (
+        "https://manavbhavsar.vercel.app/github.com/Manavv007/"
+        "SentinEL-Sentinel-eGeMAPS-openSMILE-"
+    )
+    assert unwrap_embedded_external_profile_url(wrapped_repo) == (
+        "https://github.com/Manavv007/SentinEL-Sentinel-eGeMAPS-openSMILE-"
+    )
+    assert unwrap_embedded_external_profile_url("https://manavbhavsar.vercel.app/") is None

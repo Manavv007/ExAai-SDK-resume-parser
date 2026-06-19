@@ -15,7 +15,7 @@ from agent.cache.url_cache import UrlCache
 from agent.config import get_settings
 from agent.logging_config import trace_event
 from agent.security.allowlist import check_allowlist
-from agent.security.profile_identity import ProfileTrust
+from agent.security.profile_identity import ProfileTrust, is_exa_enrichable_profile_url
 from agent.security.ssrf_guard import validate_url
 from agent.tools.crawler import (
     fetch_url_html_for_link_discovery,
@@ -29,11 +29,14 @@ from agent.tools.github_analyzer import (
     sync_github_identity,
 )
 from agent.tools.link_extractor import (
+    canonical_profile_url,
+    collapse_profile_urls,
     extract_urls_from_html,
     extract_urls_from_text,
     is_profile_discovery_url,
     merge_url_candidates,
     normalize_url,
+    profile_url_identity_key,
 )
 from agent.tools.portfolio_signal import is_portfolio_like_url
 from agent.tools.sanitizer import sanitize_external_content
@@ -103,7 +106,12 @@ def fetch_profile_url_data(
         allow_untrusted=allow_untrusted,
     )
     settings = get_settings()
-    allowed_urls = set(state.get("profile_urls") or [])
+    allowed_urls = set(
+        collapse_profile_urls(
+            list(state.get("profile_urls") or [])
+            + list(state.get("discovered_profile_urls") or [])
+        )
+    )
     if url not in allowed_urls:
         trace_event(logger, "enrichment_url_rejected", url=url, reason="url_not_in_candidate_list")
         return {"ok": False, "url": url, "error": "url_not_in_candidate_list"}
@@ -245,15 +253,7 @@ def _enriched_url_set(state: dict[str, Any]) -> set[str]:
 
 
 def _merge_unique_urls(existing: list[str] | None, new_urls: list[str]) -> list[str]:
-    merged: list[str] = list(existing or [])
-    seen = {str(url) for url in merged}
-    for url in new_urls:
-        normalized = normalize_url(str(url or "")) or str(url or "").strip()
-        if not normalized or normalized in seen:
-            continue
-        seen.add(normalized)
-        merged.append(normalized)
-    return merged
+    return collapse_profile_urls(list(existing or []) + list(new_urls))
 
 
 def _candidates_include_code_platform(candidates: list[str]) -> bool:
@@ -320,7 +320,7 @@ def _discover_links_from_entries(
     discovered_github: list[str] = []
     discovered_non_github: list[str] = []
     seen_github: set[str] = set()
-    seen_non_github: set[str] = set()
+    seen_non_github: set[tuple[str, str]] = set()
     for entry in entries:
         if not isinstance(entry, dict) or not entry.get("ok"):
             continue
@@ -356,13 +356,20 @@ def _discover_links_from_entries(
                     discovered_non_github.append(profile_url)
                 continue
             normalized = normalize_url(candidate)
-            if not normalized or normalized == page_url or not is_profile_discovery_url(normalized):
+            if not normalized or normalized == page_url:
                 continue
-            key = normalized.lower()
-            if key in seen_non_github:
+            if not is_profile_discovery_url(normalized):
                 continue
-            seen_non_github.add(key)
-            discovered_non_github.append(normalized)
+            from agent.security.profile_identity import is_personal_portfolio_crawl_url
+
+            if not is_personal_portfolio_crawl_url(normalized):
+                continue
+            canonical = canonical_profile_url(normalized) or normalized
+            identity = profile_url_identity_key(canonical)
+            if not identity or identity in seen_non_github:
+                continue
+            seen_non_github.add(identity)
+            discovered_non_github.append(canonical)
             if len(discovered_non_github) >= max_links:
                 break
         if len(discovered_non_github) >= max_links:
@@ -432,11 +439,6 @@ def _extract_discovered_links_to_state(
 
     if discovered_non_github:
         discovered_non_github = _filter_profile_discovery_urls(discovered_non_github)
-        merged_profiles = _merge_unique_urls(
-            list(state.get("profile_urls") or []),
-            discovered_non_github,
-        )
-        state["profile_urls"] = merged_profiles
         discovered_profiles = _merge_unique_urls(
             list(state.get("discovered_profile_urls") or []),
             discovered_non_github,
@@ -469,6 +471,76 @@ def suggested_next_profile_urls(state: dict[str, Any], *, limit: int = 10) -> li
     return [url for url in candidates if url not in enriched][:limit]
 
 
+def resume_profile_urls(state: dict[str, Any]) -> list[str]:
+    """URLs extracted from the resume at prep time (unchanged by discovery merges)."""
+    frozen = state.get("resume_profile_urls")
+    if isinstance(frozen, list) and frozen:
+        return collapse_profile_urls([str(url) for url in frozen if url])
+    return collapse_profile_urls(list(state.get("profile_urls") or []))
+
+
+def is_single_resume_portfolio_fetch(state: dict[str, Any], urls: list[str]) -> bool:
+    """True when the request is a lone resume-listed portfolio/profile URL (not a repo)."""
+    resume_urls = resume_profile_urls(state)
+    requested = collapse_profile_urls([str(url) for url in urls if url])
+    if len(resume_urls) != 1 or len(requested) != 1:
+        return False
+    if requested[0] != resume_urls[0]:
+        return False
+    return is_exa_enrichable_profile_url(requested[0])
+
+
+def resolve_discovery_only_mode(
+    state: dict[str, Any],
+    urls: list[str],
+    *,
+    discovery_only: bool | None = None,
+) -> bool:
+    """Discovery-only crawl: extract links from the page without follow-up Exa fetches."""
+    if discovery_only is True:
+        return True
+    if discovery_only is False:
+        return False
+    if state.get("portfolio_discovery_completed"):
+        return False
+    return is_single_resume_portfolio_fetch(state, urls)
+
+
+def exa_fetchable_discovered_profile_urls(state: dict[str, Any]) -> list[str]:
+    """Discovered profile/page URLs safe for a follow-up fetch_profiles batch (no repos)."""
+    from agent.security.profile_identity import is_personal_portfolio_crawl_url
+
+    enriched = _enriched_url_set(state)
+    enriched_keys = _enriched_profile_keys(state)
+    out: list[str] = []
+    for raw in list(state.get("discovered_profile_urls") or []):
+        url = str(raw or "").strip()
+        if not url or not is_exa_enrichable_profile_url(url):
+            continue
+        if not is_personal_portfolio_crawl_url(url):
+            continue
+        identity = _profile_identity_key(url)
+        if url in enriched or (identity and identity in enriched_keys):
+            continue
+        out.append(url)
+    return collapse_profile_urls(out)
+
+
+def github_api_repo_urls(state: dict[str, Any]) -> list[str]:
+    """Discovered GitHub/GitLab repo URLs for analyze_github (never Exa)."""
+    from agent.tools.github_analyzer import normalize_github_repo_url
+
+    seen: set[str] = set()
+    out: list[str] = []
+    for raw in list(state.get("discovered_github_repo_urls") or []):
+        normalized = normalize_github_repo_url(str(raw or ""))
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        out.append(normalized)
+    return out
+
+
 def build_fetch_profiles_tool_payload(
     state: dict[str, Any],
     *,
@@ -476,24 +548,25 @@ def build_fetch_profiles_tool_payload(
 ) -> dict[str, Any]:
     """Attach session discovery + budget fields for agent orchestration."""
     payload = dict(base)
+    exa_candidates = exa_fetchable_discovered_profile_urls(state)
+    repo_candidates = github_api_repo_urls(state)
     payload.update(
         {
             "discovered_github_repo_urls": list(state.get("discovered_github_repo_urls") or []),
             "discovered_profile_urls": list(state.get("discovered_profile_urls") or []),
+            "exa_fetchable_discovered_urls": exa_candidates,
+            "github_api_repo_urls": repo_candidates,
             "suggested_next_urls": suggested_next_profile_urls(state),
             "github_username": state.get("github_username"),
             "fetch_budget_remaining": fetch_budget_remaining(state),
+            "portfolio_discovery_completed": bool(state.get("portfolio_discovery_completed")),
         }
     )
     return payload
 
 
 def _profile_identity_key(url: str) -> tuple[str, str] | None:
-    normalized = normalize_url(url)
-    if not normalized:
-        return None
-    parsed = urlparse(normalized)
-    return parsed.netloc.lower(), parsed.path.rstrip("/").lower()
+    return profile_url_identity_key(url)
 
 
 def _enriched_profile_keys(state: dict[str, Any]) -> set[tuple[str, str]]:
@@ -508,8 +581,15 @@ def _enriched_profile_keys(state: dict[str, Any]) -> set[tuple[str, str]]:
 
 
 def _filter_profile_discovery_urls(urls: list[str]) -> list[str]:
-    """Drop CDN/static asset noise before merging discovered profile URLs."""
-    return [url for url in urls if is_profile_discovery_url(url)]
+    """Drop CDN/static assets and non-personal LinkedIn noise before discovery merge."""
+    from agent.security.profile_identity import is_personal_portfolio_crawl_url
+
+    filtered = [
+        url
+        for url in urls
+        if is_profile_discovery_url(url) and is_personal_portfolio_crawl_url(url)
+    ]
+    return collapse_profile_urls(filtered)
 
 
 def _url_matches_priority_marker(url: str, marker: str) -> bool:
@@ -540,13 +620,20 @@ def _high_value_follow_up_urls(urls: list[str], *, limit: int = 3) -> list[str]:
         "orcid.org",
     )
     ranked: list[str] = []
-    seen: set[str] = set()
+    seen: set[tuple[str, str]] = set()
+
+    from agent.security.profile_identity import is_personal_portfolio_crawl_url
 
     def add(url: str) -> None:
-        if url in seen or not is_profile_discovery_url(url):
+        if not is_profile_discovery_url(url):
             return
-        seen.add(url)
-        ranked.append(url)
+        if not is_personal_portfolio_crawl_url(url):
+            return
+        key = profile_url_identity_key(url)
+        if not key or key in seen:
+            return
+        seen.add(key)
+        ranked.append(canonical_profile_url(url) or url)
 
     for url in urls:
         if normalize_github_profile_url(url):
@@ -563,6 +650,7 @@ async def _run_discovered_link_pass(
     *,
     source_entries: list[dict[str, Any]],
     auto_follow_discovered: bool = True,
+    discovery_only: bool = False,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
     """
     Discover links from portfolio pages; optionally fetch non-GitHub links once.
@@ -574,6 +662,15 @@ async def _run_discovered_link_pass(
         source_entries=source_entries,
     )
     await ensure_github_analysis_after_discovery(state)
+    if discovery_only:
+        meta.update(
+            {
+                "discovery_only": True,
+                "auto_follow_mode": "none",
+                "follow_up_urls": [],
+            }
+        )
+        return [], [], meta
     if not discovered_non_github:
         return [], [], meta
 
@@ -652,15 +749,24 @@ def plan_batch_profile_fetches(
     Returns (eligible_urls, skipped_meta, truncated_count).
     """
     settings = get_settings()
-    allowed = set(state.get("profile_urls") or [])
+    allowed_list = collapse_profile_urls(
+        list(state.get("profile_urls") or [])
+        + list(state.get("discovered_profile_urls") or [])
+    )
+    allowed = set(allowed_list)
+    allowed_keys = {
+        key for key in (_profile_identity_key(url) for url in allowed_list) if key
+    }
     trust_by_url = state.get("profile_trust_by_url") or {}
     already_enriched = _enriched_url_set(state)
+    already_enriched_keys = _enriched_profile_keys(state)
     session_budget = max(0, settings.max_urls_per_resume - len(already_enriched))
     skipped: list[dict[str, Any]] = []
     eligible: list[str] = []
 
-    for url in _dedupe_preserve_order(urls):
-        if url not in allowed:
+    for url in collapse_profile_urls(_dedupe_preserve_order(urls)):
+        identity = _profile_identity_key(url)
+        if url not in allowed and (not identity or identity not in allowed_keys):
             skipped.append(
                 {
                     "url": url,
@@ -669,13 +775,23 @@ def plan_batch_profile_fetches(
                 }
             )
             continue
-        if url in already_enriched:
+        if url in already_enriched or (identity and identity in already_enriched_keys):
             skipped.append(
                 {
                     "url": url,
                     "ok": False,
                     "error": "already_fetched",
                     "message": "URL already enriched in this session.",
+                }
+            )
+            continue
+        if not is_exa_enrichable_profile_url(url):
+            skipped.append(
+                {
+                    "url": url,
+                    "ok": False,
+                    "error": "github_repo_skipped",
+                    "message": "GitHub/GitLab repo URLs use github_analyzer, not Exa.",
                 }
             )
             continue
@@ -833,19 +949,28 @@ async def fetch_profile_urls_batch_async(
     urls: list[str],
     *,
     auto_follow_discovered: bool = False,
+    discovery_only: bool | None = None,
 ) -> dict[str, Any]:
     """Fetch multiple profile URLs in a single batch Exa API call.
 
     Security checks (SSRF, allowlist) still run per-URL before the batch
     fetch. Cached URLs are served from SQLite without any API call.
 
-    When ``auto_follow_discovered`` is False (agent mode default), discovered
-    links are stored in session for a follow-up ``fetch_profiles`` call.
+    When ``discovery_only`` is true (explicit or auto for a lone resume portfolio
+    URL), links are extracted into session but no follow-up Exa fetches run.
+    When ``auto_follow_discovered`` is False and discovery_only is false, only
+    high-value discovered profile links may be auto-fetched in the same call.
     """
+    use_discovery_only = resolve_discovery_only_mode(
+        state,
+        urls,
+        discovery_only=discovery_only,
+    )
     trace_event(
         logger,
         "enrichment_batch_start",
         requested_count=len(urls),
+        discovery_only=use_discovery_only,
     )
     eligible, skipped, truncated = plan_batch_profile_fetches(
         state,
@@ -899,7 +1024,10 @@ async def fetch_profile_urls_batch_async(
             if isinstance(item.get("entry"), dict)
         ],
         auto_follow_discovered=auto_follow_discovered,
+        discovery_only=use_discovery_only,
     )
+    if use_discovery_only:
+        state["portfolio_discovery_completed"] = True
     await ensure_github_analysis_after_discovery(state)
     if extra_entries:
         enriched.extend(extra_entries)
@@ -929,6 +1057,20 @@ async def fetch_profile_urls_batch_async(
         github_username=state.get("github_username"),
     )
 
+    if use_discovery_only:
+        message = (
+            "Discovery-only fetch complete. Portfolio text is in session. "
+            "Next: call fetch_profiles once with JD-relevant URLs from "
+            "exa_fetchable_discovered_urls only (profile pages — never repo URLs). "
+            "For github_api_repo_urls, call analyze_github / get_github_repo_structures "
+            "instead of fetch_profiles."
+        )
+    else:
+        message = (
+            f"Fetched {fetched} profile(s). Full sanitized content stored in session "
+            "for scoring."
+        )
+
     return build_fetch_profiles_tool_payload(
         state,
         base={
@@ -936,15 +1078,13 @@ async def fetch_profile_urls_batch_async(
             "fetched": fetched,
             "skipped": skipped,
             "truncated": truncated,
+            "discovery_only": use_discovery_only,
             "results": [{k: v for k, v in item.items() if k != "entry"} for item in results],
             "discovered_non_github_count": int(
                 discovery_meta.get("discovered_non_github_count") or 0
             ),
             "discovered_github_count": int(discovery_meta.get("discovered_github_count") or 0),
-            "message": (
-                f"Fetched {fetched} profile(s). Full sanitized content stored in session "
-                "for scoring."
-            ),
+            "message": message,
         },
     )
 
@@ -954,6 +1094,7 @@ def fetch_profile_urls_batch(
     urls: list[str],
     *,
     auto_follow_discovered: bool = False,
+    discovery_only: bool | None = None,
 ) -> dict[str, Any]:
     """Sync wrapper for batch profile fetch (ADK tools)."""
     return asyncio.run(
@@ -961,6 +1102,7 @@ def fetch_profile_urls_batch(
             state,
             urls,
             auto_follow_discovered=auto_follow_discovered,
+            discovery_only=discovery_only,
         )
     )
 
@@ -980,6 +1122,8 @@ async def enrich_profile_urls_async(state: dict[str, Any]) -> list[dict[str, Any
     # Separate untrusted (stub) from fetchable URLs
     to_fetch: list[str] = []
     for url in urls:
+        if not is_exa_enrichable_profile_url(url):
+            continue
         if trust_by_url.get(url) == ProfileTrust.SCORING_UNTRUSTED.value:
             entry = _stub_untrusted_profile_entry(url)
             enriched.append(entry)
@@ -1020,7 +1164,7 @@ async def enrich_profile_urls_async(state: dict[str, Any]) -> list[dict[str, Any
             for item in batch_results
             if isinstance(item.get("entry"), dict)
         ],
-        auto_follow_discovered=True,
+        auto_follow_discovered=False,
     )
     if extra_entries:
         enriched.extend(extra_entries)

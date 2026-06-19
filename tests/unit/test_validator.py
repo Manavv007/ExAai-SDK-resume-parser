@@ -30,6 +30,8 @@ def test_valid_completed_fixture_passes() -> None:
     assert model.resume_screening_status.value == "completed"
     assert model.resume_similarity_score is not None
     assert model.resume_similarity_score.score == 78
+    assert model.candidate_integrity is not None
+    assert model.candidate_integrity.github_account_timeline.value == "good"
 
 
 def test_valid_failed_fixture_passes() -> None:

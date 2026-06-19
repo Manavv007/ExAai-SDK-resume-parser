@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from unittest.mock import patch
+from typing import Any
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -175,6 +176,7 @@ def test_generate_json_skips_gemini_after_rate_limit_flag(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("LLM_PROVIDER", "gemini")
+    monkeypatch.setenv("GEMINI_USE_VERTEXAI", "false")
     monkeypatch.setenv("GEMINI_API_KEY", "test-gemini-key")
     monkeypatch.setenv("OPEN_ROUTER_API_KEY", "sk-or-test")
     get_settings.cache_clear()
@@ -203,6 +205,7 @@ def test_generate_json_falls_back_to_openrouter_on_gemini_quota(
     from google.genai.errors import APIError
 
     monkeypatch.setenv("LLM_PROVIDER", "gemini")
+    monkeypatch.setenv("GEMINI_USE_VERTEXAI", "false")
     monkeypatch.setenv("GEMINI_API_KEY", "test-gemini-key")
     monkeypatch.setenv("OPEN_ROUTER_API_KEY", "sk-or-test")
     get_settings.cache_clear()
@@ -225,6 +228,75 @@ def test_generate_json_falls_back_to_openrouter_on_gemini_quota(
     assert mock_client_cls.return_value.models.generate_content.call_count == 1
     mock_litellm.assert_called_once()
     assert mock_litellm.call_args.kwargs["provider"] == "openrouter"
+
+
+def test_generate_json_vertex_429_retries_api_key_before_openrouter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from google.genai.errors import APIError
+
+    monkeypatch.setenv("LLM_PROVIDER", "gemini")
+    monkeypatch.setenv("GEMINI_USE_VERTEXAI", "true")
+    monkeypatch.setenv("VERTEX_GCP_PROJECT_ID", "serin-490413")
+    monkeypatch.setenv("GCP_REGION", "asia-south1")
+    monkeypatch.setenv("GEMINI_API_KEY", "test-gemini-key")
+    monkeypatch.setenv("OPEN_ROUTER_API_KEY", "sk-or-test")
+    get_settings.cache_clear()
+
+    quota_error = APIError(429, {"error": {"message": "RESOURCE_EXHAUSTED"}}, None)
+    clients: list[Any] = []
+
+    def _client_factory(*args: Any, **kwargs: Any) -> Any:
+        client = MagicMock()
+        if kwargs.get("vertexai"):
+            client.models.generate_content.side_effect = quota_error
+        else:
+            client.models.generate_content.return_value = MagicMock(
+                text='{"recommendation":"advance"}'
+            )
+        clients.append(client)
+        return client
+
+    with (
+        patch("google.genai.Client", side_effect=_client_factory),
+        patch("agent.gcp_credentials.load_gcp_credentials", return_value="creds"),
+        patch("agent.llm_client._generate_json_via_litellm") as mock_litellm,
+    ):
+        from agent.llm_client import generate_json, is_gemini_api_key_fallback_active
+
+        result = generate_json("score this resume")
+
+    assert result["recommendation"] == "advance"
+    assert len(clients) == 2
+    assert clients[0].models.generate_content.call_count == 1
+    assert clients[1].models.generate_content.call_count == 1
+    mock_litellm.assert_not_called()
+    assert is_gemini_api_key_fallback_active() is True
+
+
+def test_activate_gemini_api_key_fallback_syncs_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import os
+
+    monkeypatch.setenv("GEMINI_USE_VERTEXAI", "true")
+    monkeypatch.setenv("VERTEX_GCP_PROJECT_ID", "serin-490413")
+    monkeypatch.setenv("GCP_REGION", "asia-south1")
+    monkeypatch.setenv("GEMINI_API_KEY", "studio-key")
+    get_settings.cache_clear()
+    settings = get_settings()
+
+    sync_llm_env(settings)
+    assert os.environ.get("GOOGLE_GENAI_USE_VERTEXAI") == "1"
+    assert "GEMINI_API_KEY" not in os.environ
+
+    from agent.llm_client import activate_gemini_api_key_fallback, reset_llm_call_count
+
+    reset_llm_call_count()
+    assert activate_gemini_api_key_fallback(settings) is True
+    assert os.environ.get("GEMINI_API_KEY") == "studio-key"
+    assert os.environ.get("GOOGLE_API_KEY") == "studio-key"
+    assert "GOOGLE_GENAI_USE_VERTEXAI" not in os.environ
 
 
 def test_litellm_fallback_tries_groq_after_openrouter_error(
@@ -270,7 +342,7 @@ def test_effective_max_agent_turns_bumps_orchestration_floor(
     get_settings.cache_clear()
     settings = get_settings()
 
-    assert effective_max_agent_turns(settings) == 12
+    assert effective_max_agent_turns(settings) == 16
 
 
 def test_effective_max_agent_turns_caps_groq(

@@ -36,6 +36,30 @@ def reset_llm_call_count() -> None:
     _llm_call_state.count = 0
     _llm_call_state.trace = []
     _llm_call_state.gemini_rate_limited = False
+    _llm_call_state.gemini_vertex_disabled = False
+
+
+def is_gemini_api_key_fallback_active() -> bool:
+    """True when Vertex was skipped for this run and AI Studio API key is in use."""
+    return bool(getattr(_llm_call_state, "gemini_vertex_disabled", False))
+
+
+def activate_gemini_api_key_fallback(settings: Settings | None = None) -> bool:
+    """Switch remaining Gemini calls this screening run from Vertex to GEMINI_API_KEY."""
+    from agent.config import get_settings
+
+    resolved = settings or get_settings()
+    if not resolved.gemini_api_key.strip():
+        return False
+    if is_gemini_api_key_fallback_active():
+        return False
+    _llm_call_state.gemini_vertex_disabled = True
+    sync_llm_env(resolved)
+    logger.warning(
+        "Vertex Gemini unavailable; falling back to GEMINI_API_KEY for this screening run"
+    )
+    trace_event(logger, "gemini_api_key_fallback_activated", model=resolved.gemini_model_id)
+    return True
 
 
 def mark_gemini_rate_limited() -> None:
@@ -152,7 +176,7 @@ def effective_max_agent_turns(settings: Settings) -> int:
         str(settings.screening_mode).strip().lower() == "agent"
         and settings.agent_evidence_orchestration_enabled
     ):
-        base = max(base, 12)
+        base = max(base, 16)
     return base
 
 
@@ -337,6 +361,8 @@ def gemini_vertex_active(settings: Settings | None = None) -> bool:
     """True when Gemini calls should use Vertex AI (ADC) instead of AI Studio API key."""
     from agent.config import get_settings
 
+    if is_gemini_api_key_fallback_active():
+        return False
     return bool((settings or get_settings()).gemini_use_vertexai)
 
 
@@ -543,7 +569,12 @@ def model_version_label(settings: Settings, *, for_agent: bool = False) -> str:
         else:
             model = scoring_model_id_for_provider(settings, provider)
         return f"exaai-adk/{model}"
-    prefix = "exaai-adk/vertex" if gemini_vertex_active(settings) else "exaai-adk"
+    if gemini_vertex_active(settings):
+        prefix = "exaai-adk/vertex"
+    elif is_gemini_api_key_fallback_active():
+        prefix = "exaai-adk/gemini-api"
+    else:
+        prefix = "exaai-adk"
     return f"{prefix}/{settings.gemini_model_id}"
 
 
@@ -766,29 +797,18 @@ def _generate_json_with_litellm_fallbacks(
     raise RuntimeError("LiteLLM scoring failed without an exception")
 
 
-def generate_json(prompt: str, *, correction: str | None = None) -> dict[str, Any]:
-    """Provider-agnostic JSON generation for pipeline scoring."""
-    from agent.config import get_settings
-    from agent.tools.scorer import _parse_json_response, _scoring_response_schema
-
-    settings = get_settings()
-    contents = prompt
-    if correction:
-        contents = f"{prompt}\n\nCORRECTION:\n{correction}"
-
-    provider = resolve_llm_provider(settings)
-    if provider in LITELLM_PROVIDERS:
-        return _generate_json_with_litellm_fallbacks(contents, settings=settings)
-
-    if is_gemini_rate_limited():
-        if _litellm_fallback_providers(settings):
-            logger.warning("Gemini already rate-limited this run; using LiteLLM fallback")
-            return _generate_json_with_litellm_fallbacks(contents, settings=settings)
-
+def _generate_json_via_gemini_client(
+    contents: str,
+    *,
+    settings: Settings,
+) -> dict[str, Any]:
+    """Single Gemini generate_content call (Vertex or AI Studio per active mode)."""
     import time
 
     from google.genai import types
     from google.genai.errors import APIError, ServerError
+
+    from agent.tools.scorer import _parse_json_response, _scoring_response_schema
 
     if not gemini_configured(settings):
         raise RuntimeError(
@@ -797,7 +817,6 @@ def generate_json(prompt: str, *, correction: str | None = None) -> dict[str, An
         )
 
     client = create_genai_client(settings)
-
     response = None
     last_gemini_error: BaseException | None = None
 
@@ -818,8 +837,14 @@ def generate_json(prompt: str, *, correction: str | None = None) -> dict[str, An
         except (APIError, ServerError) as e:
             last_gemini_error = e
             if is_rate_limit_error(e):
-                mark_gemini_rate_limited()
-                logger.warning("Gemini rate limit on scoring; skipping retries")
+                if (
+                    settings.gemini_use_vertexai
+                    and not is_gemini_api_key_fallback_active()
+                    and settings.gemini_api_key.strip()
+                    and activate_gemini_api_key_fallback(settings)
+                ):
+                    client = create_genai_client(settings)
+                    continue
                 break
             status_code = getattr(e, "code", getattr(e, "status_code", None))
             if attempt == 0 and (status_code in (503,) or "503" in str(e)):
@@ -830,6 +855,42 @@ def generate_json(prompt: str, *, correction: str | None = None) -> dict[str, An
 
     if response is not None:
         return _parse_json_response(response.text or "")
+
+    if last_gemini_error is not None:
+        raise last_gemini_error
+    raise RuntimeError("Gemini call failed with no response")
+
+
+def generate_json(prompt: str, *, correction: str | None = None) -> dict[str, Any]:
+    """Provider-agnostic JSON generation for pipeline scoring."""
+    from agent.config import get_settings
+
+    settings = get_settings()
+    contents = prompt
+    if correction:
+        contents = f"{prompt}\n\nCORRECTION:\n{correction}"
+
+    provider = resolve_llm_provider(settings)
+    if provider in LITELLM_PROVIDERS:
+        return _generate_json_with_litellm_fallbacks(contents, settings=settings)
+
+    if is_gemini_rate_limited():
+        if _litellm_fallback_providers(settings):
+            logger.warning("Gemini already rate-limited this run; using LiteLLM fallback")
+            return _generate_json_with_litellm_fallbacks(contents, settings=settings)
+
+    import time
+
+    last_gemini_error: BaseException | None = None
+    try:
+        return _generate_json_via_gemini_client(contents, settings=settings)
+    except Exception as exc:
+        if not is_rate_limit_error(exc):
+            raise
+        last_gemini_error = exc
+
+    mark_gemini_rate_limited()
+    logger.warning("Gemini rate limit on scoring; skipping retries")
 
     if last_gemini_error and is_rate_limit_error(last_gemini_error):
         last_exc: BaseException = last_gemini_error

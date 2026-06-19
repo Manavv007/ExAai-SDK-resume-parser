@@ -117,6 +117,10 @@ class JdStructured:
     must_have: list[str] = field(default_factory=list)
     nice_to_have: list[str] = field(default_factory=list)
     requirements: list[JdRequirement] = field(default_factory=list)
+    # LLM-extracted dynamic role fields (populated when JD_PARSE_USE_LLM=true)
+    role_label: str | None = None  # e.g. "Embedded Systems Engineer", "Quant Analyst"
+    portfolio_platforms: list[str] = field(default_factory=list)  # e.g. ["github.com", "kaggle.com"]
+    portfolio_required: bool = False  # False for HR/sales/ops roles
 
 
 def detect_format(content: bytes, filename: str = "") -> FileFormat:
@@ -370,6 +374,24 @@ industry (string|null),
 seniority (string|null),
 role_category (one of: software_engineering, aiml, data_science, design,
 research_academic, non_portfolio),
+role_label (string): specific natural-language name for this role, e.g.
+  "Embedded Systems Engineer", "Blockchain Developer", "Quant Analyst",
+  "Game Developer", "Bioinformatician", "Security Researcher", etc.
+  Be specific — use the job title from the JD if it is precise, otherwise
+  derive a canonical role label from the duties and requirements.
+portfolio_platforms (array of strings): domain names of platforms where
+  verifiable proof-of-work for this specific role would be found.
+  Choose from: github.com, gitlab.com, bitbucket.org, kaggle.com,
+  behance.net, dribbble.com, figma.com, scholar.google.com, researchgate.net,
+  orcid.org, arxiv.org, leetcode.com, hackerrank.com, codepen.io,
+  codesandbox.io, huggingface.co, replit.com, devpost.com, itch.io,
+  npmjs.com, pypi.org, crates.io, dockerhub.com, pub.dev.
+  Include any relevant platforms even if not in the list above.
+  For non-portfolio roles (HR, sales, ops, PM without coding duties)
+  return an empty array [].
+portfolio_required (boolean): true if a proof-of-work portfolio on one of
+  the listed platforms is meaningfully expected for this role; false for
+  HR/sales/ops/PM/recruitment roles.
 requirements (array of objects, each with:
   text (string),
   weight ("must_have" or "nice_to_have"),
@@ -424,6 +446,16 @@ JOB DESCRIPTION:
             nice_to_have=nice_to_have,
         )
 
+    # Parse new dynamic role fields (graceful fallback if LLM omits them)
+    raw_platforms = data.get("portfolio_platforms")
+    portfolio_platforms: list[str] = []
+    if isinstance(raw_platforms, list):
+        portfolio_platforms = [
+            str(p).strip().lower() for p in raw_platforms if isinstance(p, str) and str(p).strip()
+        ]
+    portfolio_required = bool(data.get("portfolio_required", bool(portfolio_platforms)))
+    role_label = str(data.get("role_label") or data.get("job_title") or "").strip() or None
+
     return JdStructured(
         job_title=data.get("job_title"),
         domain=str(data.get("domain") or "general"),
@@ -433,4 +465,7 @@ JOB DESCRIPTION:
         must_have=must_have,
         nice_to_have=nice_to_have,
         requirements=requirements,
+        role_label=role_label,
+        portfolio_platforms=portfolio_platforms,
+        portfolio_required=portfolio_required,
     )

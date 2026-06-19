@@ -49,6 +49,92 @@ _TRACKING_PARAMS = frozenset(
     }
 )
 
+_PROFILE_NOISE_QUERY_PARAMS = frozenset(
+    {
+        "locale",
+        "lang",
+        "language",
+        "hl",
+        "lng",
+        "set_locale",
+        "country",
+        "region",
+        "ref",
+        "referrer",
+        "trk",
+        "trk_info",
+        "original_referer",
+        "originalreferer",
+    }
+)
+
+# First path segment that signals site navigation, not a personal profile handle.
+_SITE_SECTION_FIRST_SEGMENTS = frozenset(
+    {
+        "about",
+        "blog",
+        "company",
+        "explore",
+        "features",
+        "feed",
+        "for_you",
+        "freelance",
+        "gallery",
+        "groups",
+        "help",
+        "hire",
+        "joblist",
+        "jobs",
+        "learning",
+        "login",
+        "marketplace",
+        "misc",
+        "news",
+        "orgs",
+        "posts",
+        "projects",
+        "pulse",
+        "register",
+        "resources",
+        "school",
+        "search",
+        "settings",
+        "signup",
+        "support",
+        "topics",
+        "trending",
+        "enterprise",
+    }
+)
+
+_PROFILE_ROUTE_PREFIXES = frozenset(
+    {
+        "in",
+        "u",
+        "user",
+        "users",
+        "profile",
+        "people",
+        "channel",
+        "c",
+    }
+)
+
+_GITHUB_NON_PROFILE_SEGMENTS = frozenset(
+    {
+        "orgs",
+        "settings",
+        "marketplace",
+        "topics",
+        "features",
+        "enterprise",
+        "sponsors",
+        "login",
+        "signup",
+        "explore",
+    }
+)
+
 _DOMAIN_INFERENCE: dict[str, list[tuple[str, str]]] = {
     "technical": [
         ("github.com", "https://github.com/{handle}"),
@@ -120,6 +206,9 @@ _STATIC_ASSET_EXTENSIONS = frozenset(
         ".zip",
         ".gz",
         ".json",
+        ".pdf",
+        ".doc",
+        ".docx",
     }
 )
 
@@ -148,6 +237,28 @@ _NON_PROFILE_HOST_SUFFIXES = (
     "doubleclick.net",
     "googletagmanager.com",
     "google-analytics.com",
+    "formspree.io",
+    "getform.io",
+    "formcarry.com",
+    "web3forms.com",
+    "typeform.com",
+    "calendly.com",
+    "tally.so",
+)
+
+# Path segments on a custom portfolio host that embed another site's profile URL.
+_EMBEDDED_EXTERNAL_PROFILE_MARKERS = frozenset(
+    {
+        "github.com",
+        "gitlab.com",
+        "linkedin.com",
+        "twitter.com",
+        "x.com",
+        "instagram.com",
+        "facebook.com",
+        "youtube.com",
+        "medium.com",
+    }
 )
 
 # Hosts that look like filenames (e.g. https://script.js) before base-URL resolution.
@@ -229,6 +340,127 @@ def normalize_url(url: str) -> str | None:
     return normalized
 
 
+def profile_url_identity_key(url: str) -> tuple[str, str] | None:
+    """Stable dedupe key for the same personal profile page (ignores query/www)."""
+    canonical = canonical_profile_url(url) or normalize_url(url)
+    if not canonical:
+        return None
+    parsed = urlparse(canonical)
+    host = parsed.netloc.lower().removeprefix("www.")
+    path = parsed.path.rstrip("/").lower() or "/"
+    return host, path
+
+
+def _path_looks_like_personal_profile(host: str, path_parts: list[str]) -> bool:
+    """True when the URL path is a candidate-owned profile root, not site navigation."""
+    if not path_parts:
+        return False
+
+    first = path_parts[0].lower()
+
+    if host.endswith(("github.com", "gitlab.com")):
+        return len(path_parts) == 1 and first not in _GITHUB_NON_PROFILE_SEGMENTS
+
+    if "linkedin.com" in host:
+        return first == "in" and len(path_parts) >= 2
+
+    if first in _SITE_SECTION_FIRST_SEGMENTS:
+        return False
+
+    if first in _PROFILE_ROUTE_PREFIXES and len(path_parts) >= 2:
+        return True
+
+    if first.startswith("@"):
+        return True
+
+    if len(path_parts) == 1:
+        segment = first
+        if "." in segment:
+            ext = segment.rsplit(".", 1)[-1].lower()
+            if ext in {"html", "htm", "php", "asp", "aspx", "jsp", "json", "xml"}:
+                return False
+        return True
+
+    if len(path_parts) == 2 and first in {"profile"}:
+        return True
+
+    return False
+
+
+_PORTFOLIO_PATH_HOSTS = frozenset(
+    {
+        "behance.net",
+        "dribbble.com",
+        "figma.com",
+        "artstation.com",
+    }
+)
+
+# Scraped JS fragments and template garbage — not candidate profile pages.
+_PROFILE_PATH_GARBAGE_RE = re.compile(
+    r"[(){}\[\]|\\+*?]|function\s|\.replace\(|n\.target",
+    re.IGNORECASE,
+)
+
+
+def is_fetchable_personal_profile_url(url: str) -> bool:
+    """True when a portfolio-host URL is a personal handle page, not site navigation."""
+    canonical = canonical_profile_url(url) or normalize_url(url)
+    if not canonical:
+        return False
+    if _PROFILE_PATH_GARBAGE_RE.search(canonical):
+        return False
+    parsed = urlparse(canonical)
+    host = parsed.netloc.lower().removeprefix("www.")
+    if is_junk_discovery_url(canonical):
+        return False
+    if not any(host == marker or host.endswith(f".{marker}") for marker in _PORTFOLIO_PATH_HOSTS):
+        return True
+    path_parts = [part for part in parsed.path.split("/") if part]
+    return _path_looks_like_personal_profile(host, path_parts)
+
+
+def canonical_profile_url(url: str) -> str | None:
+    """Normalize a portfolio/profile URL for fetch and dedupe (drops locale/noise params)."""
+    normalized = normalize_url(url)
+    if not normalized:
+        return None
+    parsed = urlparse(normalized)
+    host = parsed.netloc.lower().removeprefix("www.")
+    path_parts = [part for part in parsed.path.split("/") if part]
+
+    noise_params = _TRACKING_PARAMS | _PROFILE_NOISE_QUERY_PARAMS
+    query = parse_qs(parsed.query, keep_blank_values=False)
+    filtered = {key: value for key, value in query.items() if key.lower() not in noise_params}
+
+    # Personal profile pages: query string is almost always locale/tracking noise.
+    if _path_looks_like_personal_profile(host, path_parts):
+        filtered = {}
+
+    path = parsed.path or ""
+    if len(path) > 1 and path.endswith("/"):
+        path = path.rstrip("/")
+
+    new_query = urlencode(filtered, doseq=True)
+    return urlunparse(("https", host, path, "", new_query, ""))
+
+
+def collapse_profile_urls(urls: list[str]) -> list[str]:
+    """Keep one canonical URL per personal-profile identity (first occurrence wins)."""
+    merged: list[str] = []
+    seen: set[tuple[str, str]] = set()
+    for raw in urls:
+        canonical = canonical_profile_url(str(raw or "")) or normalize_url(str(raw or ""))
+        if not canonical:
+            continue
+        key = profile_url_identity_key(canonical)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        merged.append(canonical)
+    return merged
+
+
 def _host_looks_like_real_site(netloc: str) -> bool:
     """Reject bare filenames mistaken for domains (e.g. script.js, dev_avatar.jpg)."""
     host = netloc.lower().replace("www.", "")
@@ -273,14 +505,61 @@ def is_cdn_or_asset_host(url: str) -> bool:
     return not _host_looks_like_real_site(host)
 
 
+def has_embedded_external_profile_path(url: str) -> bool:
+    """True when a custom-domain URL path embeds github.com/linkedin.com as a segment."""
+    normalized = normalize_url(url)
+    if not normalized:
+        return False
+    parsed = urlparse(normalized)
+    host = parsed.netloc.lower().removeprefix("www.")
+    if any(host == marker or host.endswith(f".{marker}") for marker in _EMBEDDED_EXTERNAL_PROFILE_MARKERS):
+        return False
+    parts = [part.lower() for part in parsed.path.split("/") if part]
+    return bool(parts) and parts[0] in _EMBEDDED_EXTERNAL_PROFILE_MARKERS
+
+
+def unwrap_embedded_external_profile_url(url: str) -> str | None:
+    """Rewrite portfolio-relative paths like ``/github.com/user/repo`` to the real host URL."""
+    normalized = normalize_url(url)
+    if not normalized or not has_embedded_external_profile_path(normalized):
+        return None
+    parsed = urlparse(normalized)
+    parts = [part for part in parsed.path.split("/") if part]
+    if not parts:
+        return None
+    marker = parts[0].lower()
+    if marker == "github.com" and len(parts) >= 2:
+        owner = parts[1]
+        if len(parts) == 2:
+            profile = f"https://github.com/{owner}"
+            return profile if is_profile_discovery_url(profile) else None
+        repo = parts[2]
+        repo_url = f"https://github.com/{owner}/{repo}"
+        return repo_url if is_profile_discovery_url(repo_url) else None
+    if marker == "linkedin.com" and len(parts) >= 3 and parts[1].lower() == "in":
+        linkedin = f"https://linkedin.com/in/{parts[2]}"
+        return linkedin if is_profile_discovery_url(linkedin) else None
+    return None
+
+
+def is_junk_discovery_url(url: str) -> bool:
+    """Reject form handlers, resume PDFs, and portfolio-relative external profile links."""
+    normalized = normalize_url(url)
+    if not normalized:
+        return True
+    if is_static_asset_url(normalized):
+        return True
+    if is_cdn_or_asset_host(normalized):
+        return True
+    return has_embedded_external_profile_path(normalized)
+
+
 def is_profile_discovery_url(url: str) -> bool:
     """True when a URL is worth keeping for profile discovery / Exa follow-up."""
     normalized = normalize_url(url)
     if not normalized:
         return False
-    if is_static_asset_url(normalized):
-        return False
-    if is_cdn_or_asset_host(normalized):
+    if is_junk_discovery_url(normalized):
         return False
     return True
 
@@ -434,10 +713,19 @@ def extract_links(
 
     for raw in explicit_raw:
         normalized = normalize_url(raw)
-        if normalized:
-            host = urlparse(normalized).netloc
+        if not normalized:
+            continue
+        unwrapped = unwrap_embedded_external_profile_url(normalized)
+        if unwrapped:
+            host = urlparse(unwrapped).netloc
             explicit_hosts.add(host)
-            add(normalized, "explicit", host)
+            add(unwrapped, "explicit", host)
+            continue
+        if not is_profile_discovery_url(normalized):
+            continue
+        host = urlparse(normalized).netloc
+        explicit_hosts.add(host)
+        add(normalized, "explicit", host)
 
     if get_settings().infer_profile_urls:
         for inferred in _infer_links(

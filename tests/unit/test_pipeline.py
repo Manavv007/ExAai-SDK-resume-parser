@@ -27,6 +27,7 @@ def test_create_screening_agent_has_tools(test_settings) -> None:
     expected = {fn.__name__ for fn in screening_agent_tools()}
     assert tool_names == expected
     assert len(agent.tools) == len(expected)
+    assert "classify_portfolio_role" in tool_names
     assert "fetch_profiles" in tool_names
     assert "submit_screening_result" in tool_names
     assert "analyze_github" in tool_names

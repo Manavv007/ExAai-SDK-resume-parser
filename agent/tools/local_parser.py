@@ -330,27 +330,34 @@ def extract_jd_title(jd_text: str) -> str | None:
 
 def parse_jd_local(jd_text: str) -> JdStructured:
     """Full local JD structuring with typed requirements."""
-    from agent.tools.portfolio_signal import infer_role_category
+    from agent.tools.portfolio_signal import NON_PORTFOLIO_ROLE_CATEGORIES, infer_role_category
 
     normalized = normalize_extracted_text(jd_text)
     must, nice = extract_jd_requirements(normalized)
     domain = detect_jd_domain(normalized)
     title = extract_jd_title(normalized)
+    role_category = infer_role_category(
+        job_title=title,
+        domain=domain,
+        jd_text=normalized,
+        must_have=must,
+        nice_to_have=nice,
+    )
+    # Heuristic path: role_label = job title; portfolio_platforms left empty
+    # (the LLM Gemini path will fill platforms; heuristic relies on category lookup).
+    portfolio_required = role_category not in NON_PORTFOLIO_ROLE_CATEGORIES
     return JdStructured(
         job_title=title,
         domain=domain,
         industry=detect_jd_industry(normalized),
         seniority=detect_jd_seniority(normalized),
-        role_category=infer_role_category(
-            job_title=title,
-            domain=domain,
-            jd_text=normalized,
-            must_have=must,
-            nice_to_have=nice,
-        ),
+        role_category=role_category,
         must_have=must,
         nice_to_have=nice,
         requirements=_requirements_with_types(must, nice, domain),
+        role_label=title,
+        portfolio_platforms=[],
+        portfolio_required=portfolio_required,
     )
 
 

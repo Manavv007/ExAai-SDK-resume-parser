@@ -71,7 +71,9 @@ def test_score_screening_success(mock_generate, test_settings) -> None:
 
 
 @patch("agent.tools.scorer._generate_json")
-def test_score_screening_applies_portfolio_penalty(mock_generate, test_settings) -> None:
+def test_score_screening_skips_portfolio_penalty_in_pipeline_mode(
+    mock_generate, test_settings
+) -> None:
     fixture = json.loads((FIXTURES / "valid_result_completed.json").read_text(encoding="utf-8"))
     fixture["resume_similarity_score"] = {"score": 92, "reasoning": "Strong resume claims."}
     mock_generate.return_value = fixture
@@ -93,11 +95,41 @@ def test_score_screening_applies_portfolio_penalty(mock_generate, test_settings)
     )
 
     assert result["resume_screening_status"] == "completed"
-    assert result["resume_similarity_score"]["score"] <= 75
-    assert any(
-        flag.get("flag") == "missing_portfolio_verification"
-        for flag in result.get("red_flags") or []
+    breakdown = result.get("evaluation_breakdown") or {}
+    portfolio = breakdown.get("portfolio_signal") or {}
+    assert portfolio.get("role_category_source") == "skipped_pipeline"
+    assert not portfolio.get("penalty_applied")
+    assert breakdown.get("portfolio_penalty", 0) == 0
+
+
+@patch("agent.tools.scorer._generate_json")
+def test_score_screening_applies_portfolio_penalty_in_agent_mode(mock_generate, test_settings) -> None:
+    fixture = json.loads((FIXTURES / "valid_result_completed.json").read_text(encoding="utf-8"))
+    fixture["resume_similarity_score"] = {"score": 92, "reasoning": "Strong resume claims."}
+    mock_generate.return_value = fixture
+
+    from agent.tools.scorer import normalize_screening_result
+
+    normalized = normalize_screening_result(
+        fixture,
+        application_id=fixture["application_id"],
+        job_id=fixture["job_id"],
+        resume_text="Senior backend engineer with Python.",
+        rubric=[{"criterion": "Python", "weight": "must_have", "requirement_type": "technical_skill"}],
+        enriched_contents=[],
+        jd_structured={"role_category": "software_engineering"},
+        resume_structured={"experience_years": 10},
+        screening_mode="agent",
+        portfolio_role_category="software_engineering",
+        portfolio_role_reasoning="Backend SWE role requires GitHub proof.",
+        portfolio_role_source="agent",
     )
+
+    breakdown = normalized.get("evaluation_breakdown") or {}
+    portfolio = breakdown.get("portfolio_signal") or {}
+    assert portfolio.get("role_category_source") == "agent"
+    assert portfolio.get("penalty_applied") is True
+    assert breakdown.get("portfolio_penalty", 0) > 0
 
 
 @patch("agent.tools.scorer._generate_json")
@@ -420,3 +452,62 @@ def test_score_screening_no_processing_time_ms_validates(mock_generate, test_set
     meta = result["metadata"]
     if "processing_time_ms" in meta:
         assert isinstance(meta["processing_time_ms"], int)
+
+
+def test_normalize_attaches_candidate_integrity_without_changing_fit_score() -> None:
+    rubric = [
+        {"criterion": "Python", "weight": "must_have", "requirement_type": "technical_skill"},
+    ]
+    raw = {
+        "resume_similarity_score": {"score": 82, "reasoning": "Strong Python fit."},
+        "requirement_matches": [
+            {
+                "requirement": "Python",
+                "requirement_type": "technical_skill",
+                "match_score": 82,
+                "evidence": "Resume lists Python.",
+            }
+        ],
+        "recommendation": "advance",
+        "recommendation_reasoning": "Good match.",
+        "red_flags": [],
+    }
+    github = {
+        "user_profile": {
+            "login": "alice",
+            "html_url": "https://github.com/alice",
+            "created_at": "2018-01-01T00:00:00Z",
+        },
+        "activity_timeline": {"earliest_activity_at": "2020-01-01T00:00:00Z"},
+    }
+
+    baseline = normalize_screening_result(
+        raw,
+        application_id="11111111-1111-4111-8111-111111111111",
+        job_id="22222222-2222-4222-8222-222222222222",
+        resume_text="resume",
+        rubric=rubric,
+        enriched_contents=[],
+        github_repo_analyses=None,
+        profile_urls=["https://github.com/alice"],
+    )
+    normalized = normalize_screening_result(
+        raw,
+        application_id="11111111-1111-4111-8111-111111111111",
+        job_id="22222222-2222-4222-8222-222222222222",
+        resume_text="resume",
+        rubric=rubric,
+        enriched_contents=[],
+        github_repo_analyses=github,
+        profile_urls=["https://github.com/alice"],
+    )
+
+    assert (
+        normalized["resume_similarity_score"]["score"]
+        == baseline["resume_similarity_score"]["score"]
+    )
+    assert "candidate_integrity" in normalized
+    integrity = normalized["candidate_integrity"]
+    assert integrity["github_account_timeline"] == "good"
+    assert integrity["linkedin_contact_links"] in ("good", "bad", "not_enough_evidence")
+    assert normalized["integrity_signals"]

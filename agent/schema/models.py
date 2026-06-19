@@ -48,6 +48,31 @@ class ResumeSimilarityScore(BaseModel):
     reasoning: str = Field(min_length=1, max_length=500)
 
 
+class IntegrityIndication(StrEnum):
+    GOOD = "good"
+    BAD = "bad"
+    NOT_ENOUGH_EVIDENCE = "not_enough_evidence"
+
+
+class CandidateIntegrity(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    overall: IntegrityIndication
+    github_account_timeline: IntegrityIndication
+    linkedin_contact_links: IntegrityIndication
+    github_profile_readme_links: IntegrityIndication
+    reasoning: str = Field(min_length=1, max_length=500)
+
+
+class IntegritySignal(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    signal_id: str = Field(min_length=1)
+    indication: IntegrityIndication
+    evidence: str = Field(min_length=1, max_length=500)
+    source_urls: list[str] = Field(default_factory=list)
+
+
 class RequirementMatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -177,10 +202,11 @@ class ResumeScreeningResult(BaseModel):
     errors: list[ScreeningError] = Field(default_factory=list)
 
     resume_similarity_score: ResumeSimilarityScore | None = None
+    candidate_integrity: CandidateIntegrity | None = None
+    integrity_signals: list[IntegritySignal] = Field(default_factory=list)
     requirement_matches: list[RequirementMatch] = Field(default_factory=list)
     recommendation: ScreeningRecommendation | None = None
     recommendation_reasoning: str | None = None
-    red_flags: list[RedFlag] = Field(default_factory=list)
     sources_crawled: list[CrawledSource] = Field(default_factory=list)
     temp_sandbox_reports: list[dict[str, Any]] | None = None
     top_file_evaluation: list[TopFileEvaluation] = Field(default_factory=list)

@@ -15,15 +15,14 @@ from agent.schema import SCHEMA_PATH
 from agent.security.profile_identity import (
     apply_identity_score_cap,
     format_enriched_content_for_scoring,
-    merge_identity_red_flags,
 )
 from agent.tools.portfolio_signal import (
     apply_portfolio_penalties,
     build_portfolio_prompt_section,
-    build_portfolio_red_flags,
+    enrich_portfolio_signal_metadata,
     evaluate_portfolio_signal,
     resolve_experience_years,
-    resolve_role_category,
+    resolve_portfolio_role_category,
 )
 from agent.tools.repo_scoring import (
     build_evaluation_breakdown,
@@ -35,7 +34,6 @@ from agent.tools.result_sanitizer import (
     optional_metadata_int,
     quantize_score,
     resolve_overall_score,
-    sanitize_red_flags,
     sanitize_requirement_matches,
     sanitize_sources_crawled,
 )
@@ -143,6 +141,13 @@ def _build_portfolio_signal(
     discovered_github_repo_urls: list[str] | None = None,
     discovered_profile_urls: list[str] | None = None,
     github_repo_analyses: dict[str, Any] | None = None,
+    screening_mode: str | None = None,
+    portfolio_role_category: str | None = None,
+    portfolio_role_reasoning: str | None = None,
+    portfolio_role_source: str | None = None,
+    portfolio_role_platforms: list[str] | None = None,
+    portfolio_role_label: str | None = None,
+    session_state: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     try:
         urls = list(profile_urls or [])
@@ -180,13 +185,26 @@ def _build_portfolio_signal(
         elif resume_structured is not None:
             resume_dict = resume_structured.__dict__
 
-        return evaluate_portfolio_signal(
-            role_category=resolve_role_category(jd_structured),
+        role_category = resolve_portfolio_role_category(
+            session_state=session_state,
+            screening_mode=screening_mode,
+            portfolio_role_category=portfolio_role_category,
+        )
+        signal = evaluate_portfolio_signal(
+            role_category=role_category,
             profile_urls=urls,
             enriched_contents=enriched_contents or [],
             experience_years=resolve_experience_years(resume_structured),
             resume_structured=resume_dict,
             github_repo_analyses=github_repo_analyses,
+            extra_platforms=portfolio_role_platforms or [],
+            role_label=portfolio_role_label,
+        )
+        return enrich_portfolio_signal_metadata(
+            signal,
+            screening_mode=screening_mode,
+            portfolio_role_reasoning=portfolio_role_reasoning,
+            portfolio_role_source=portfolio_role_source,
         )
     except Exception as exc:
         import logging
@@ -195,18 +213,28 @@ def _build_portfolio_signal(
             "Portfolio signal evaluation failed; skipping penalties: %s",
             exc,
         )
-        return {
-            "role_category": resolve_role_category(jd_structured),
-            "required_platforms_found": [],
-            "required_platforms_missing": [],
-            "penalty_points": 0,
-            "penalty_applied": False,
-            "penalty_reason": None,
-            "crawl_status_log": {},
-            "github_status_log": {},
-            "sandbox_status_log": {},
-            "personal_portfolio_url": None,
-        }
+        role_category = resolve_portfolio_role_category(
+            session_state=session_state,
+            screening_mode=screening_mode,
+            portfolio_role_category=portfolio_role_category,
+        )
+        return enrich_portfolio_signal_metadata(
+            {
+                "role_category": role_category,
+                "required_platforms_found": [],
+                "required_platforms_missing": [],
+                "penalty_points": 0,
+                "penalty_applied": False,
+                "penalty_reason": None,
+                "crawl_status_log": {},
+                "github_status_log": {},
+                "sandbox_status_log": {},
+                "personal_portfolio_url": None,
+            },
+            screening_mode=screening_mode,
+            portfolio_role_reasoning=portfolio_role_reasoning,
+            portfolio_role_source=portfolio_role_source,
+        )
 
 
 def _generate_json(prompt: str, *, correction: str | None = None) -> dict[str, Any]:
@@ -301,7 +329,6 @@ Rules:
 - evidence: max 200 characters, plain text, no newlines; never empty.
 - Do not include metadata, application_id, job_id, sources_crawled, or null fields.
 - Do not include source_quote unless you have a short quote.
-- red_flags: use [] unless there is a clear serious issue.
 - recommendation_reasoning: required, max 500 characters, never empty.
 - When repo signals are irrelevant to the candidate's repo type or JD,
   treat them as neutral instead of negative.
@@ -384,11 +411,19 @@ def normalize_screening_result(
     profile_identity_cap_score: bool = False,
     github_repo_analyses: dict[str, Any] | None = None,
     profile_urls: list[str] | None = None,
+    resume_profile_urls: list[str] | None = None,
     profile_url_meta: list[dict[str, Any]] | None = None,
     jd_structured: dict[str, Any] | Any | None = None,
     resume_structured: dict[str, Any] | Any | None = None,
     discovered_github_repo_urls: list[str] | None = None,
     discovered_profile_urls: list[str] | None = None,
+    profile_trust_by_url: dict[str, str] | None = None,
+    screening_mode: str | None = None,
+    portfolio_role_category: str | None = None,
+    portfolio_role_reasoning: str | None = None,
+    portfolio_role_source: str | None = None,
+    portfolio_role_platforms: list[str] | None = None,
+    portfolio_role_label: str | None = None,
 ) -> dict[str, Any]:
     """Map model output onto the platform contract and apply score caps."""
     settings = get_settings()
@@ -456,6 +491,16 @@ def normalize_screening_result(
         discovered_github_repo_urls=discovered_github_repo_urls,
         discovered_profile_urls=discovered_profile_urls,
         github_repo_analyses=github_repo_analyses,
+        screening_mode=screening_mode or str(settings.screening_mode),
+        portfolio_role_category=portfolio_role_category,
+        portfolio_role_reasoning=portfolio_role_reasoning,
+        portfolio_role_source=portfolio_role_source,
+        portfolio_role_platforms=portfolio_role_platforms,
+        portfolio_role_label=portfolio_role_label,
+        session_state={
+            "screening_mode": screening_mode or str(settings.screening_mode),
+            "portfolio_role_category": portfolio_role_category,
+        },
     )
     portfolio_penalty_applied = 0
     portfolio_hard_cap_applied = False
@@ -483,9 +528,17 @@ def normalize_screening_result(
         if not base:
             return note[:limit]
         # Preserve the note even when base is already near the limit.
-        available = max(0, limit - len(note))
-        trimmed = base[:available].rstrip()
-        return (trimmed + note).strip()[:limit]
+        available = max(0, limit - len(note) - 1)
+        if len(base) <= available:
+            trimmed = base
+        else:
+            trimmed = base[:available]
+            last_space = trimmed.rfind(" ")
+            if last_space != -1 and last_space > available // 2:
+                trimmed = trimmed[:last_space].rstrip()
+            else:
+                trimmed = trimmed.rstrip()
+        return f"{trimmed} {note}".strip()[:limit]
 
     if sandbox_penalty > 0:
         from agent.tools.sandbox_scoring import compute_sandbox_score_ceiling
@@ -530,6 +583,26 @@ def normalize_screening_result(
     if not reasoning:
         reasoning = "No reasoning provided."
 
+    resume_dict_for_integrity: dict[str, Any] = {}
+    if isinstance(resume_structured, dict):
+        resume_dict_for_integrity = resume_structured
+    elif resume_structured is not None:
+        resume_dict_for_integrity = dict(getattr(resume_structured, "__dict__", {}))
+
+    from agent.security.candidate_integrity import compute_candidate_integrity
+
+    integrity_result = compute_candidate_integrity(
+        profile_urls=profile_urls or [],
+        enriched_contents=enriched_contents or [],
+        github_repo_analyses=github_repo_analyses,
+        resume_structured=resume_dict_for_integrity,
+        profile_trust_by_url=profile_trust_by_url,
+    )
+    integrity_indicators = integrity_result.get("indicators") or {}
+    integrity_reasoning = str(integrity_result.get("reasoning") or "").strip()[:500] or (
+        "Candidate integrity checks completed."
+    )
+
     recommendation = _normalize_recommendation(raw.get("recommendation"))
     if score >= 75 and recommendation == "hold":
         recommendation = "advance"
@@ -540,6 +613,7 @@ def normalize_screening_result(
         raw.get("sources_crawled"),
         enriched_fallback=enriched_contents,
         profile_urls_fallback=profile_urls,
+        resume_profile_urls=resume_profile_urls,
         profile_url_meta=profile_url_meta,
     )
 
@@ -603,15 +677,27 @@ def normalize_screening_result(
         "recommendation_reasoning": (
             str(raw.get("recommendation_reasoning") or "").strip() or reasoning
         )[:2000],
-        "red_flags": merge_identity_red_flags(
-            sanitize_red_flags(raw.get("red_flags"))
-            + build_portfolio_red_flags(portfolio_signal),
-            identity_red_flags or [],
-        ),
         "sources_crawled": sources,
         "metadata": metadata,
         "errors": [],
     }
+    if str(screening_status) == "completed":
+        result["candidate_integrity"] = {
+            "overall": integrity_indicators.get("overall", "not_enough_evidence"),
+            "github_account_timeline": integrity_indicators.get(
+                "github_account_timeline", "not_enough_evidence"
+            ),
+            "linkedin_contact_links": integrity_indicators.get(
+                "linkedin_contact_links", "not_enough_evidence"
+            ),
+            "github_profile_readme_links": integrity_indicators.get(
+                "github_profile_readme_links", "not_enough_evidence"
+            ),
+            "reasoning": integrity_reasoning,
+        }
+        signals = integrity_result.get("signals")
+        if isinstance(signals, list) and signals:
+            result["integrity_signals"] = signals
 
     attach_temp_sandbox_reports(result, github_repo_analyses)
     if isinstance(evaluation_breakdown, dict):
@@ -698,12 +784,14 @@ def score_screening(
     profile_identity_cap_score: bool = False,
     github_repo_analyses: dict[str, Any] | None = None,
     profile_urls: list[str] | None = None,
+    resume_profile_urls: list[str] | None = None,
     profile_url_meta: list[dict[str, Any]] | None = None,
     resume_structured: dict[str, Any] | Any | None = None,
     max_llm_attempts: int | None = None,
     compact_sandbox_prompt: bool = False,
     discovered_github_repo_urls: list[str] | None = None,
     discovered_profile_urls: list[str] | None = None,
+    profile_trust_by_url: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """
     Run Gemini judge and return normalized resume-screening-result-v1 dict.
@@ -726,6 +814,7 @@ def score_screening(
         discovered_github_repo_urls=discovered_github_repo_urls,
         discovered_profile_urls=discovered_profile_urls,
         github_repo_analyses=github_repo_analyses,
+        screening_mode="pipeline",
     )
 
     prompt = _build_scoring_prompt(
@@ -759,11 +848,14 @@ def score_screening(
                 profile_identity_cap_score=profile_identity_cap_score,
                 github_repo_analyses=github_repo_analyses,
                 profile_urls=profile_urls,
+                resume_profile_urls=resume_profile_urls,
                 profile_url_meta=profile_url_meta,
                 jd_structured=jd_structured,
                 resume_structured=resume_structured,
                 discovered_github_repo_urls=discovered_github_repo_urls,
                 discovered_profile_urls=discovered_profile_urls,
+                profile_trust_by_url=profile_trust_by_url,
+                screening_mode="pipeline",
             )
             outcome = validate_result_detailed(normalized)
             if outcome.ok:
@@ -780,8 +872,7 @@ def score_screening(
                 break
             correction_prompt = (
                 f"Invalid JSON or LLM error: {exc}. Return compact valid JSON only. "
-                "Integer scores, non-empty evidence, no metadata/null fields. "
-                "Use red_flags: []."
+                "Integer scores, non-empty evidence, no metadata/null fields."
             )
 
     return build_failed_result(
@@ -801,6 +892,8 @@ def score_screening_from_state(
     compact_sandbox_prompt: bool = False,
 ) -> dict[str, Any]:
     """Score using ADK/prep session state keys."""
+    from agent.enrichment import resume_profile_urls as frozen_resume_profile_urls
+
     rubric = resolve_session_rubric(state)
     return score_screening(
         application_id=state["application_id"],
@@ -817,10 +910,12 @@ def score_screening_from_state(
         profile_identity_cap_score=bool(state.get("profile_identity_cap_score")),
         github_repo_analyses=state.get("github_repo_analyses"),
         profile_urls=list(state.get("profile_urls") or []),
+        resume_profile_urls=frozen_resume_profile_urls(state),
         profile_url_meta=list(state.get("profile_url_meta") or []),
         resume_structured=state.get("resume_structured") or {},
         max_llm_attempts=max_llm_attempts,
         compact_sandbox_prompt=compact_sandbox_prompt,
         discovered_github_repo_urls=list(state.get("discovered_github_repo_urls") or []),
         discovered_profile_urls=list(state.get("discovered_profile_urls") or []),
+        profile_trust_by_url=dict(state.get("profile_trust_by_url") or {}),
     )

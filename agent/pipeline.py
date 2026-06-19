@@ -12,6 +12,7 @@ from google.adk.sessions.in_memory_session_service import InMemorySessionService
 
 from agent.adk_tools import (
     analyze_github,
+    classify_portfolio_role,
     fetch_profiles,
     get_github_repo_structures,
     list_candidate_profile_urls,
@@ -51,6 +52,7 @@ from agent.tools.validator import validate_result_detailed
 
 def _screening_agent_tools() -> list[Any]:
     tools: list[Any] = [
+        classify_portfolio_role,
         list_candidate_profile_urls,
         fetch_profiles,
         submit_screening_result,
