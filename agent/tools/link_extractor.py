@@ -512,7 +512,10 @@ def has_embedded_external_profile_path(url: str) -> bool:
         return False
     parsed = urlparse(normalized)
     host = parsed.netloc.lower().removeprefix("www.")
-    if any(host == marker or host.endswith(f".{marker}") for marker in _EMBEDDED_EXTERNAL_PROFILE_MARKERS):
+    if any(
+        host == marker or host.endswith(f".{marker}")
+        for marker in _EMBEDDED_EXTERNAL_PROFILE_MARKERS
+    ):
         return False
     parts = [part.lower() for part in parsed.path.split("/") if part]
     return bool(parts) and parts[0] in _EMBEDDED_EXTERNAL_PROFILE_MARKERS

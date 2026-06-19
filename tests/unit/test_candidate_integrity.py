@@ -4,17 +4,12 @@
 
 from __future__ import annotations
 
-
-
 from agent.security.candidate_integrity import (
     compare_url_sets,
     compute_candidate_integrity,
     compute_overall_integrity,
     parse_resume_timeline_anchor,
 )
-
-
-
 
 
 def test_compare_url_sets_overlap() -> None:

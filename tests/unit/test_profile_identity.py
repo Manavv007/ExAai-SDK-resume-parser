@@ -93,7 +93,12 @@ def test_linkedin_non_profile_urls_not_personal_portfolio_crawl() -> None:
         is False
     )
     assert is_personal_portfolio_crawl_url("https://behance.net/archidaga") is True
-    assert is_personal_portfolio_crawl_url("https://behance.net/joblist?tracking_source=nav20") is False
+    assert (
+        is_personal_portfolio_crawl_url(
+            "https://behance.net/joblist?tracking_source=nav20"
+        )
+        is False
+    )
     assert is_personal_portfolio_crawl_url("https://behance.net/?tracking_source=nav20") is False
 
 

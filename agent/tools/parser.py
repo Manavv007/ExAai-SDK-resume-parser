@@ -119,7 +119,8 @@ class JdStructured:
     requirements: list[JdRequirement] = field(default_factory=list)
     # LLM-extracted dynamic role fields (populated when JD_PARSE_USE_LLM=true)
     role_label: str | None = None  # e.g. "Embedded Systems Engineer", "Quant Analyst"
-    portfolio_platforms: list[str] = field(default_factory=list)  # e.g. ["github.com", "kaggle.com"]
+    # e.g. ["github.com", "kaggle.com"]
+    portfolio_platforms: list[str] = field(default_factory=list)
     portfolio_required: bool = False  # False for HR/sales/ops roles
 
 

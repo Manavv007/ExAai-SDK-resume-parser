@@ -217,15 +217,19 @@ def test_is_fetchable_personal_profile_url_filters_behance_navigation() -> None:
     from agent.tools.link_extractor import is_fetchable_personal_profile_url
 
     assert is_fetchable_personal_profile_url("https://behance.net/archidaga") is True
-    assert is_fetchable_personal_profile_url("https://behance.net/joblist?tracking_source=nav20") is False
-    assert is_fetchable_personal_profile_url("https://behance.net/?tracking_source=nav20") is False
-    assert is_fetchable_personal_profile_url("https://behance.net/about") is False
     assert (
         is_fetchable_personal_profile_url(
-            "https://behance.net/archidaga/+(n.target&&n.target.src):n}function e(n){return n.replace"
+            "https://behance.net/joblist?tracking_source=nav20"
         )
         is False
     )
+    assert is_fetchable_personal_profile_url("https://behance.net/?tracking_source=nav20") is False
+    assert is_fetchable_personal_profile_url("https://behance.net/about") is False
+    garbage_url = (
+        "https://behance.net/archidaga/+(n.target&&n.target.src)"
+        ":n}function e(n){return n.replace"
+    )
+    assert is_fetchable_personal_profile_url(garbage_url) is False
 
 
 def test_is_profile_discovery_url_rejects_form_handlers_and_wrapped_external_paths() -> None:

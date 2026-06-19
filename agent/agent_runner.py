@@ -64,8 +64,9 @@ Evidence workflow (Exa-first, role-aware):
       exa_fetchable_discovered_urls + github_api_repo_urls. No follow-up Exa in this call.
    b) fetch_profiles([...]) — ONE batch with JD-relevant profile URLs only (from
       exa_fetchable_discovered_urls / required_platforms). Never put repo URLs in fetch_profiles.
-   c) github_api_repo_urls → analyze_github (after discovery when repos were found on a portfolio page),
-      get_github_repo_structures, run_sandbox_analysis. Never pass repo URLs to fetch_profiles.
+   c) github_api_repo_urls → analyze_github (after discovery when repos were found
+      on a portfolio page), get_github_repo_structures, run_sandbox_analysis.
+      Never pass repo URLs to fetch_profiles.
 4. Multiple resume URLs: batch JD-relevant profile URLs in one fetch_profiles call.
    list_candidate_profile_urls() shows exa_fetchable_discovered_urls and github_api_repo_urls.
 5. Code evidence (only when classify_portfolio_role says code_evidence_required):
@@ -642,7 +643,9 @@ async def run_screening_agent_async(
     via Exa when ``AUTO_ENRICH_PROFILES`` is enabled (default).
     """
     register_prep_state(state)
-    state["screening_mode"] = state.get("screening_mode") or get_settings().screening_mode or "agent"
+    state["screening_mode"] = (
+        state.get("screening_mode") or get_settings().screening_mode or "agent"
+    )
     run_started = time.perf_counter()
     trace_event(
         logger,
@@ -854,7 +857,8 @@ async def run_screening_agent_async(
                 job_id=job_id,
                 code="AGENT_TIMEOUT",
                 message=(
-                    f"Agent run exceeded {agent_timeout_seconds}s without submitting screening_result."
+                    f"Agent run exceeded {agent_timeout_seconds}s without "
+                    "submitting screening_result."
                 ),
                 resume_text=resume_text,
                 processing_time_ms=processing_time_ms,

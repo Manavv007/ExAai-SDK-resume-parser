@@ -72,7 +72,12 @@ def test_static_git_metrics_same_email_different_names_is_sole_author(tmp_path: 
 
     for idx, author_name in enumerate(("Manav", "Manav Bhavsar", "Manavv007"), start=1):
         (tmp_path / f"file{idx}.txt").write_text(f"v{idx}", encoding="utf-8")
-        subprocess.run(["git", "add", f"file{idx}.txt"], cwd=str(tmp_path), check=True, capture_output=True)
+        subprocess.run(
+            ["git", "add", f"file{idx}.txt"],
+            cwd=str(tmp_path),
+            check=True,
+            capture_output=True,
+        )
         subprocess.run(
             [
                 "git",

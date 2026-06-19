@@ -183,9 +183,11 @@ CODE_EVIDENCE_ROLE_CATEGORIES: frozenset[str] = frozenset(
 
 PORTFOLIO_ROLE_OPTIONS_TEXT = """\
 Portfolio role categories (call classify_portfolio_role after reading the JD):
-- ux_engineering: UX/UI Engineer, design+code hybrid roles — verify GitHub/GitLab/Bitbucket OR Behance/Dribbble/Figma (either satisfies)
+- ux_engineering: UX/UI Engineer, design+code hybrid roles — verify GitHub/GitLab/Bitbucket
+  OR Behance/Dribbble/Figma (either satisfies)
 - design: UX/UI/product/visual design (design-first) — verify Behance/Dribbble/Figma
-- software_engineering: SDE/backend/frontend/devops/full stack (code-first) — verify GitHub/GitLab/Bitbucket
+- software_engineering: SDE/backend/frontend/devops/full stack (code-first) —
+  verify GitHub/GitLab/Bitbucket
 - aiml: ML/AI engineering — verify GitHub/GitLab/Kaggle
 - data_science: analytics/data science — verify Kaggle/GitHub
 - research_academic: research/postdoc/faculty — verify Scholar/ORCID/ResearchGate
@@ -195,8 +197,9 @@ Portfolio role categories (call classify_portfolio_role after reading the JD):
   for this specific role would live. The agent's platforms are COMBINED with any platforms
   already extracted from the JD at parse time; the candidate needs AT LEAST ONE.
 
-IMPORTANT: Job titles like "UX Engineer" or "UI Engineer" are ux_engineering, NOT software_engineering,
-even when the JD lists React/Node/Python. A Behance or Figma portfolio satisfies proof-of-work.
+IMPORTANT: Job titles like "UX Engineer" or "UI Engineer" are ux_engineering,
+NOT software_engineering, even when the JD lists React/Node/Python.
+A Behance or Figma portfolio satisfies proof-of-work.
 
 For unusual roles (Blockchain Dev, Game Dev, Embedded SW, Quant Analyst, etc.),
 use role_category="custom" and supply portfolio_platforms explicitly.
@@ -495,7 +498,9 @@ def build_portfolio_role_tool_response(
         "penalty_label": config["penalty_label"],
         "base_penalty": int(config["base_penalty"]),
         "code_evidence_required": category in CODE_EVIDENCE_ROLE_CATEGORIES,
-        "evidence_guidance": guidance_by_category.get(category, guidance_by_category["non_portfolio"]),
+        "evidence_guidance": guidance_by_category.get(
+            category, guidance_by_category["non_portfolio"]
+        ),
     }
 
 

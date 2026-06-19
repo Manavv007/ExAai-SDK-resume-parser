@@ -78,7 +78,8 @@ def test_normalize_github_profile_url() -> None:
 
 
 def test_extract_github_owner_from_repo_url() -> None:
-    assert extract_github_owner_from_repo_url("https://github.com/Manavv007/exaai-adk") == "Manavv007"
+    url = "https://github.com/Manavv007/exaai-adk"
+    assert extract_github_owner_from_repo_url(url) == "Manavv007"
     assert extract_github_owner_from_repo_url("https://github.com/Manavv007") is None
     assert extract_github_owner_from_repo_url("https://github.com/topics/python") is None
     assert (

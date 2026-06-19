@@ -9,7 +9,11 @@ from urllib.parse import urlparse
 
 from agent.security.profile_identity import slug_lists_plausibly_same_person, slug_tokens_from_url
 from agent.tools.github_analyzer import normalize_github_profile_url, normalize_github_repo_url
-from agent.tools.link_extractor import extract_urls_from_text, is_profile_discovery_url, normalize_url
+from agent.tools.link_extractor import (
+    extract_urls_from_text,
+    is_profile_discovery_url,
+    normalize_url,
+)
 
 SignalStatus = Literal["pass", "fail", "warn", "insufficient_data"]
 IntegrityIndication = Literal["good", "bad", "not_enough_evidence"]
@@ -228,10 +232,16 @@ def _signal(
 
 def _eval_github_account_timeline(github_repo_analyses: dict[str, Any] | None) -> dict[str, Any]:
     if not isinstance(github_repo_analyses, dict):
-        return _signal("github_account_timeline", "insufficient_data", evidence="No GitHub analysis.")
+        return _signal(
+            "github_account_timeline",
+            "insufficient_data",
+            evidence="No GitHub analysis.",
+        )
     user_profile = dict(github_repo_analyses.get("user_profile") or {})
     if not user_profile.get("html_url"):
-        username = str(github_repo_analyses.get("username") or user_profile.get("login") or "").strip()
+        username = str(
+            github_repo_analyses.get("username") or user_profile.get("login") or ""
+        ).strip()
         if username:
             user_profile["html_url"] = f"https://github.com/{username}"
     timeline = github_repo_analyses.get("activity_timeline") or {}
@@ -306,7 +316,10 @@ def _eval_linkedin_contact_links(
             evidence=(
                 "LinkedIn contact links conflict with resume profile URLs: "
                 + "; ".join(
-                    f"{item['platform']} resume={item['resume_url']} linkedin={item['platform_url']}"
+                    (
+                        f"{item['platform']} resume={item['resume_url']} "
+                        f"linkedin={item['platform_url']}"
+                    )
                     for item in comparison["conflicting"][:2]
                 )
             ),
@@ -376,7 +389,9 @@ def _eval_github_profile_readme_links(
         else {}
     )
     if not user_profile.get("html_url"):
-        username = str((github_repo_analyses or {}).get("username") or user_profile.get("login") or "").strip()
+        username = str(
+            (github_repo_analyses or {}).get("username") or user_profile.get("login") or ""
+        ).strip()
         if username:
             user_profile["html_url"] = f"https://github.com/{username}"
     source = [user_profile["html_url"]] if user_profile.get("html_url") else []
@@ -497,7 +512,10 @@ def compute_candidate_integrity(
     resume_structured: dict[str, Any] | None = None,
     profile_trust_by_url: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    """Return integrity indicators, reasoning, and per-signal evidence. Does not affect fit score."""
+    """Return integrity indicators, reasoning, and per-signal evidence.
+
+    Does not affect fit score.
+    """
     _ = profile_trust_by_url  # reserved for future trust-weighted signals
     resume_structured = resume_structured if isinstance(resume_structured, dict) else {}
     resume_profiles = _resume_personal_profile_urls(list(profile_urls or []))

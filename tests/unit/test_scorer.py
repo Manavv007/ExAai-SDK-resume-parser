@@ -103,7 +103,9 @@ def test_score_screening_skips_portfolio_penalty_in_pipeline_mode(
 
 
 @patch("agent.tools.scorer._generate_json")
-def test_score_screening_applies_portfolio_penalty_in_agent_mode(mock_generate, test_settings) -> None:
+def test_score_screening_applies_portfolio_penalty_in_agent_mode(
+    mock_generate, test_settings
+) -> None:
     fixture = json.loads((FIXTURES / "valid_result_completed.json").read_text(encoding="utf-8"))
     fixture["resume_similarity_score"] = {"score": 92, "reasoning": "Strong resume claims."}
     mock_generate.return_value = fixture
@@ -115,7 +117,13 @@ def test_score_screening_applies_portfolio_penalty_in_agent_mode(mock_generate, 
         application_id=fixture["application_id"],
         job_id=fixture["job_id"],
         resume_text="Senior backend engineer with Python.",
-        rubric=[{"criterion": "Python", "weight": "must_have", "requirement_type": "technical_skill"}],
+        rubric=[
+            {
+                "criterion": "Python",
+                "weight": "must_have",
+                "requirement_type": "technical_skill",
+            }
+        ],
         enriched_contents=[],
         jd_structured={"role_category": "software_engineering"},
         resume_structured={"experience_years": 10},

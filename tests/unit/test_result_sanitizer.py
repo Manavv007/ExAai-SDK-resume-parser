@@ -206,7 +206,11 @@ def test_sanitize_sources_crawled_excludes_unfetched_discovered_junk() -> None:
         enriched_fallback=[
             {"url": portfolio, "domain_category": "portfolio", "ok": True},
             {"url": "https://github.com/Manavv007", "domain_category": "code", "ok": True},
-            {"url": "https://linkedin.com/in/manavbhavsar0908", "domain_category": "professional", "ok": True},
+            {
+                "url": "https://linkedin.com/in/manavbhavsar0908",
+                "domain_category": "professional",
+                "ok": True,
+            },
         ],
         profile_urls_fallback=[
             portfolio,

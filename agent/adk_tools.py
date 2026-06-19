@@ -29,7 +29,6 @@ from agent.tools.github_analyzer import (
     extract_github_repo_urls,
     merge_github_repo_urls,
     normalize_github_repo_url,
-    resolve_github_username,
     resolve_github_username_with_source,
     sync_github_identity,
 )
@@ -158,7 +157,9 @@ def list_candidate_profile_urls(tool_context: ToolContext) -> dict[str, Any]:
         "suggested_next_urls": suggested_next_profile_urls(tool_context.state),
         "github_username": tool_context.state.get("github_username"),
         "fetch_budget_remaining": fetch_budget_remaining(tool_context.state),
-        "portfolio_discovery_completed": bool(tool_context.state.get("portfolio_discovery_completed")),
+        "portfolio_discovery_completed": bool(
+            tool_context.state.get("portfolio_discovery_completed")
+        ),
         "count": len(urls),
     }
     _tool_end("list_candidate_profile_urls", tool_context.state, started, url_count=len(urls))

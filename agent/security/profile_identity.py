@@ -286,7 +286,7 @@ def is_exa_enrichable_profile_url(url: str) -> bool:
 
 
 def is_portfolio_or_custom_url(url: str) -> bool:
-    """True for URLs that are personal portfolio pages or custom domains, excluding major platforms."""
+    """True for personal portfolio pages or custom domains, excluding major platforms."""
     from agent.tools.link_extractor import normalize_url
 
     normalized = normalize_url(url)
