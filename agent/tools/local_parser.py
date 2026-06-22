@@ -138,12 +138,33 @@ def _is_noise_line(line: str) -> bool:
     return False
 
 
+_LIST_CONNECTOR_RE = re.compile(r"\b(?:and|or)\b", re.IGNORECASE)
+
+
 def _split_skill_phrases(text: str) -> list[str]:
-    """Split short comma/semicolon-separated skill lists."""
-    if len(text) > 120 or text.count(",") + text.count(";") < 1:
-        return [text]
-    parts = re.split(r"[,;]\s*", text)
-    return [p.strip() for p in parts if p.strip() and len(p.strip()) > 2]
+    """Split a short, pure comma/semicolon-separated skill list into items.
+
+    Conservative by design: only genuine inline skill lists (e.g. ``"Python, SQL,
+    Docker"``) are split. Compound requirement sentences are returned unchanged when
+    they contain parentheses, ``and``/``or`` connectors, or long/phrase-like parts —
+    splitting those produces meaningless one-word rubric criteria (e.g. ``"classes"``,
+    ``"pip/venv)"``, ``"or related field"``).
+    """
+    stripped = text.strip()
+    if len(stripped) > 120 or (stripped.count(",") + stripped.count(";")) < 1:
+        return [stripped]
+    # Parentheses wrap in-sentence enumerations; keep the whole requirement.
+    if "(" in stripped or ")" in stripped:
+        return [stripped]
+    # "and"/"or" signal a prose enumeration ("CS, engineering, or related field"),
+    # not a bare skill list.
+    if _LIST_CONNECTOR_RE.search(stripped):
+        return [stripped]
+    parts = [p.strip() for p in re.split(r"[,;]\s*", stripped) if p.strip()]
+    # Only treat as a list when every part is a short skill token, not a phrase.
+    if not parts or any(len(p) > 40 or len(p.split()) > 4 for p in parts):
+        return [stripped]
+    return [p for p in parts if len(p) > 2]
 
 
 def _classify_requirement_type(text: str, domain: str) -> str:

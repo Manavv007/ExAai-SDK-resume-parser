@@ -67,7 +67,7 @@ RUN python -m pip install --no-cache-dir --upgrade pip \
         "pip-audit>=2.7.3" \
         "semgrep>=1.91.0" \
         "tree-sitter>=0.21.3" \
-        "tree-sitter-languages>=1.10.2" \
+        "tree-sitter-language-pack" \
     && chown -R appuser:appuser /app
 
 USER appuser

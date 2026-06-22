@@ -35,7 +35,7 @@ def analyze_non_python_code(repo_dir: Path) -> dict[str, Any]:
 
     try:
         from tree_sitter import Parser
-        from tree_sitter_languages import get_language
+        from tree_sitter_language_pack import get_language
     except Exception:
         return {
             "avg_cyclomatic_complexity": None,

@@ -92,3 +92,39 @@ def test_extract_jd_inline_required_bullets() -> None:
     assert "FastAPI" in must
     assert "Docker" in nice
     assert "Kubernetes" in nice
+
+
+def test_compound_requirements_are_not_shredded() -> None:
+    """Requirement sentences with parentheses or and/or must stay whole (bug fix)."""
+    jd_text = (FIXTURES / "sample_jd.txt").read_text(encoding="utf-8")
+    must, nice = extract_jd_requirements(jd_text)
+    all_reqs = must + nice
+
+    # Compound bullets must survive as single criteria, not comma fragments.
+    assert "Solid Python fundamentals (functions, classes, async basics, pip/venv)" in must
+    assert "Basic Git workflow (clone, branch, commit, pull request)" in must
+    assert "Exposure to FastAPI, Flask, or Django" in nice
+    assert any("degree in CS, engineering, or related field" in r for r in must)
+
+    # The shredded fragments from the bad report must NOT appear as requirements.
+    for fragment in (
+        "classes",
+        "async basics",
+        "pip/venv)",
+        "branch",
+        "commit",
+        "pull request)",
+        "engineering",
+        "or related field",
+        "Flask",
+        "or Django",
+    ):
+        assert fragment not in all_reqs, f"requirement was shredded into {fragment!r}"
+
+
+def test_pure_skill_list_still_splits() -> None:
+    """Genuine short skill lists without and/or or parens should still split."""
+    must, _ = extract_jd_requirements("Role\nRequirements:\n- Must have: Python, FastAPI, SQL\n")
+    assert "Python" in must
+    assert "FastAPI" in must
+    assert "SQL" in must
